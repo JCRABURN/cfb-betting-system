@@ -18,17 +18,21 @@ HEADERS = {
 }
 
 def get_current_week():
-    """Determine the current CFB week from the schedule."""
-    url = f"{CFBD_BASE}/calendar"
-    resp = requests.get(url, headers=HEADERS)
-    resp.raise_for_status()
-    weeks = resp.json()
-    now = datetime.utcnow().isoformat()
-    for week in weeks:
-        if week.get("firstGameStart", "") <= now <= week.get("lastGameStart", "9999"):
-            return week.get("week", 1), datetime.utcnow().year
-    return 1, datetime.utcnow().year
-
+    """Return current week, defaulting gracefully in offseason."""
+    try:
+        url = f"{CFBD_BASE}/calendar"
+        resp = requests.get(url, headers=HEADERS)
+        resp.raise_for_status()
+        weeks = resp.json()
+        now = datetime.utcnow().isoformat()
+        for week in weeks:
+            if week.get("firstGameStart", "") <= now <= week.get("lastGameStart", "9999"):
+                return week.get("week", 1), datetime.utcnow().year
+        # Offseason fallback — return week 1 of next season
+        return 1, datetime.utcnow().year
+    except Exception as e:
+        print(f"Calendar API unavailable ({e}), defaulting to Week 1")
+        return 1, datetime.utcnow().year
 
 def fetch_games(year, week):
     """Get all D-I games for the given week."""
