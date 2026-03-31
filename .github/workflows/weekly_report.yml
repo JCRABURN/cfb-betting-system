@@ -44,12 +44,3 @@ jobs:
           git add docs/data/ outputs/
           git diff --staged --quiet || git commit -m "Week auto-report $(date +'%Y-%m-%d')"
           git push
-```
-
----
-
-**Step 2 — Create the second workflow file**
-
-Same folder, new file called:
-```
-results_updater.yml
