@@ -5,6 +5,9 @@ on:
     - cron: '0 14 * * 2'  # Tuesday 9am CT (14:00 UTC)
   workflow_dispatch:        # lets you trigger it manually anytime
 
+permissions:
+  contents: write
+
 jobs:
   generate-picks:
     runs-on: ubuntu-latest

@@ -28,8 +28,12 @@ def fetch_current_lines():
         "bookmakers": BOOKMAKERS,
         "oddsFormat": "american"
     }
-    resp = requests.get(url, params=params)
-    resp.raise_for_status()
+    try:
+        resp = requests.get(url, params=params, timeout=30)
+        resp.raise_for_status()
+    except Exception as e:
+        print(f"Odds API unavailable ({e}) — returning empty lines.")
+        return []
 
     remaining = resp.headers.get("x-requests-remaining", "?")
     print(f"Odds API requests remaining: {remaining}")
@@ -132,6 +136,12 @@ def main():
         meta = json.load(f)
     week = meta["week"]
     year = meta["year"]
+
+    if meta.get("offseason"):
+        print("Offseason mode — no odds to fetch. Saving empty placeholders.")
+        save_lines([], week, year, label="opening")
+        save_lines([], week, year, label="current")
+        return
 
     print(f"Fetching odds for Week {week}, {year}")
     current_lines = fetch_current_lines()
