@@ -1,0 +1,55 @@
+name: Weekly CFB Betting Report
+
+on:
+  schedule:
+    - cron: '0 14 * * 2'  # Tuesday 9am CT (14:00 UTC)
+  workflow_dispatch:        # lets you trigger it manually anytime
+
+jobs:
+  generate-picks:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Fetch stats
+        env:
+          CFBD_API_KEY: ${{ secrets.CFBD_API_KEY }}
+        run: python data/fetch_stats.py
+
+      - name: Fetch odds
+        env:
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+        run: python data/fetch_odds.py
+
+      - name: Run spread model
+        run: python models/spread_model.py
+
+      - name: Generate report
+        run: python models/generate_report.py
+
+      - name: Commit and push output
+        run: |
+          git config user.name "cfb-bot"
+          git config user.email "bot@cfb-betting-system"
+          git add docs/data/ outputs/
+          git diff --staged --quiet || git commit -m "Week auto-report $(date +'%Y-%m-%d')"
+          git push
+```
+
+---
+
+**Step 2 — Create the second workflow file**
+
+Same folder, new file called:
+```
+results_updater.yml

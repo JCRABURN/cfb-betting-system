@@ -1,0 +1,36 @@
+name: Weekly Results Updater
+
+on:
+  schedule:
+    - cron: '0 11 * * 1'  # Monday 6am CT (11:00 UTC)
+  workflow_dispatch:
+
+jobs:
+  update-results:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Update results and retrain weights
+        env:
+          CFBD_API_KEY: ${{ secrets.CFBD_API_KEY }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+        run: python models/update_results.py
+
+      - name: Commit updated data
+        run: |
+          git config user.name "cfb-bot"
+          git config user.email "bot@cfb-betting-system"
+          git add docs/data/ models/weights.json tracker/
+          git diff --staged --quiet || git commit -m "Results update $(date +'%Y-%m-%d')"
+          git push
