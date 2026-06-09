@@ -1,5 +1,5 @@
 # 🏈 CFB Spread Betting Report — Week 1, 2026
-*Generated: Tuesday, June 02 2026 at 06:06 PM UTC*
+*Generated: Tuesday, June 09 2026 at 04:32 PM UTC*
 *Total Units Deployed: 0/15*
 
 ---
