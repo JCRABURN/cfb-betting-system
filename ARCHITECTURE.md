@@ -289,4 +289,55 @@ Spot-checking the real 126-game response surfaced further genuine mismatches tha
 
 **Verified against the real 126-game response**: 208/252 team slots (82.5%) now resolve. Manually confirmed every one of the remaining 44 unresolved names is a genuine FCS/D-II opponent in a buy game (Abilene Christian, Alcorn State, Citadel, Furman, etc.) — none of them exist in the FBS-only `teams` table, so correctly falling through unresolved is the right behavior, not a bug. 11 new unit tests added in `tests/test_fetch_odds.py` covering the mascot-suffix case, the alias cases, the normalization cases, the Ohio/Miami disambiguation, and the fallback-when-unresolvable case. All 25 tests pass.
 
-Not yet committed — pending review, alongside whatever Phase 3 work (CFBD historical lines backfill) follows.
+Committed as `89e2ef6`.
+
+## 12. Phase 3 — historical lines backfill and the full 2019–2025 run (2026-07-29, same session)
+
+### Live field check on `/lines` before writing the backfill
+
+Checked `/lines` for 2025 week 10 before building anything. Key findings:
+- Uses CFBD's own team naming throughout (`homeTeam: "Florida"`, `awayTeam: "Georgia"` — bare school names, matching `games` exactly), and the **same numeric `id`** as `/games` for the same game. Unlike The Odds API, there's no mascot-name mismatch here by construction. The team-name resolver is still applied before every insert per instruction — a no-op (exact match) in the normal case, a safety net if a provider-level name ever disagrees with CFBD's own.
+- Spread convention: `spread` is the home team's line (positive = home underdog, negative = home favored) — confirmed via `homeTeam=Florida, awayTeam=Georgia, spread=7, formattedSpread="Georgia -7"`. Matches our existing `home_spread` column with no sign flip needed.
+- Coverage confirmed back through 2019 (48/48, 61/61, 118/118 games had at least one provider across three spot-checked years).
+- Providers vary by year (`numberfire`/`teamrankings`/`Caesars`/`Bovada` in 2019; `DraftKings`/`ESPN Bet`/`Bovada` in 2023) — CFBD also returns its own pre-computed `"consensus"` line directly, so the historical script stores that rather than re-deriving an average itself.
+
+### The single fully-assembled example (per instruction, before the full run)
+
+Ingested one week (2025 week 10) as a preview and assembled one real game end-to-end — **Georgia @ Florida** (`game_id=401752755`, final Georgia 24–Florida 20): Florida (3.5 SP+, 4-8) vs. Georgia (24.1 SP+, 12-2), opening lines Georgia -7.5 to -8 across books, closing -6.5 to -7. Coherent story: the ~20-point SP+ gap matches Georgia being favored by 7-8, the line moved slightly toward Florida over the week, and the 4-point final margin means Florida covered both the opening and closing numbers. Owner reviewed and confirmed this as sufficient proof before the full run.
+
+This preview also caught a real bug: `/lines`' `classification` param is silently ignored too (same pattern as `/games`' `division` — see §10), returning FCS-vs-FCS games alongside FBS ones. Initial handling (checking whether `game_id` already existed in `games`) crashed with a `FOREIGN KEY constraint failed`, which led to a bigger discovery below.
+
+### Bigger discovery: `games` was never populated for historical weeks
+
+The FK-constraint crash revealed that `games` only had 52 rows total — the one week `fetch_stats.py` had ever been pointed at manually. Nothing had ever backfilled the **schedule/results** themselves for historical weeks; `backfill_historical_stats.py` is season-level only (no `game_id`), and `fetch_stats.py` only ever writes the current week. Fixed by having `backfill_historical_lines.py` upsert into `games` directly from `/lines`' own game-level fields (`id`, `season`, `week`, `seasonType`, `startDate`, `homeTeam`, `awayTeam`, `homeScore`, `awayScore` — note `homeScore`/`awayScore` here, a *third* naming variant for the same concept as `/games`' `homePoints`/`awayPoints`), filtering FBS-vs-FBS client-side since the query param doesn't work. The `ON CONFLICT` only touches `home_points`/`away_points`/`completed`, so a richer row already written by `fetch_stats.py` (venue, lat/long, neutral_site) is never clobbered — verified with a dedicated test.
+
+### Full 2019–2025 × weeks 1–15 run
+
+Ran for real, no `--force` (idempotency handled resuming from the two already-ingested weeks automatically, exactly as intended):
+
+```
+25,678 rows in betting_lines (18,413 closing + 7,265 opening)
+4,952 rows in games (across all 7 seasons combined)
+1,035 rows in team_game_stats (104 live + 931 historical backfill, from Phase 2)
+0 rows with a NULL game_id in betting_lines
+0 rows with both home_spread AND total NULL (no junk rows)
+```
+
+**Team-name resolver match rate: 100% exact match, 9,710/9,710 lookups, 0 fallback needed, 0 unresolved.** Confirms the live-check finding: CFBD's `/lines` genuinely uses consistent naming with `/games`, unlike The Odds API.
+
+**Rate limits:** never triggered. All 105 weekly requests succeeded on the first attempt; the retry/backoff logic (429-aware, exponential, up to 5 attempts) built for this run never had to fire. `empty_weeks`/`failed_weeks` were both empty at the end of the run.
+
+**Anomalies checked and confirmed as real, not bugs:**
+- **2020 season is genuinely smaller**: 489 games vs. ~730-760 in every other year; week 1 has only 5 games vs. 45-48 in other years, ramping up gradually through week 8 (44 games) — this is the real COVID-shortened schedule (Big Ten, Pac-12, and others delayed or canceled early games), not a data gap.
+- **Week 15 is sparse most years** (1-37 games depending on year) — correctly reflects that week 15 is conference championship week plus a handful of makeup games, not every year having a full slate.
+- **Provider name drift across years** (`"DraftKings"` vs `"Draft Kings"`, `"Caesars"` vs `"Caesars (Pennsylvania)"` vs `"Caesars Sportsbook (Colorado)"`) — same real-world sportsbook, different label per year/state license in CFBD's own `provider` field. Not a bug, but worth knowing before doing any "track DraftKings' line over time" analysis — that will need a book-name normalization pass, not built here since it wasn't asked for and doesn't block anything today.
+
+### Tests
+
+8 new tests in `tests/test_backfill_historical_lines.py`: games-row creation from `/lines`' own fields, FCS-vs-FCS client-side filtering, opening/closing row correctness (including the case where a provider has no opening value at all), idempotent rerun (no duplication), the games-upsert non-clobbering behavior, already-ingested skip (no wasted API call), and the 429-retry/give-up-after-max-retries paths. All 33 tests across the whole suite pass.
+
+### Foundation status
+
+With this, `betting_lines` and `team_game_stats` are both archived and joining correctly across all 7 seasons (2019-2025), verified end-to-end with a real assembled example before the full run and comprehensive row-count/anomaly checks after. This closes out the "stats + lines archived and joining correctly" milestone. Feature engineering and the prediction model are the next conversation.
+
+Not yet committed — pending final review.
