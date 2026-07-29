@@ -35,7 +35,7 @@ class GameAnalysis:
 def load_weights():
     path = "models/weights.json"
     if os.path.exists(path):
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             return json.load(f)
     # Default weights — tuned over time via self-learning loop
     return {
@@ -55,7 +55,7 @@ def load_latest_stats():
     files = sorted(glob.glob("data/stats/week_*.json"))
     if not files:
         return None
-    with open(files[-1]) as f:
+    with open(files[-1], encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -63,7 +63,7 @@ def load_latest_odds():
     files = sorted(glob.glob("data/spreads/current_week_*.json"))
     if not files:
         return {}
-    with open(files[-1]) as f:
+    with open(files[-1], encoding="utf-8") as f:
         return {g.get("home_team", "") + g.get("away_team", ""): g for g in json.load(f)}
 
 
@@ -258,7 +258,7 @@ def analyze_games():
     os.makedirs("models", exist_ok=True)
     out_path = f"data/analysis/week_{week}_{year}.json"
     os.makedirs("data/analysis", exist_ok=True)
-    with open(out_path, "w") as f:
+    with open(out_path, "w", encoding="utf-8") as f:
         json.dump({"week": week, "year": year, "total_units": total_units, "games": results}, f, indent=2)
 
     qualified = [g for g in results if g["qualifies"]]

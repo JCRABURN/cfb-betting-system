@@ -4,36 +4,31 @@ Reads analysis output and generates:
   1. A markdown report (outputs/week_XX_report.md)
   2. A JSON file for the web dashboard (docs/data/week_XX.json)
   3. Updates the master picks log (docs/data/all_picks.json)
-  4. Updates the performance tracker (tracker/performance_log.csv)
+  4. Inserts new pending picks into data/cfb.db (pick_type='live')
 """
 
 import json
 import os
+import sys
 import glob
-import csv
 from datetime import datetime
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import db
 
 
 def load_latest_analysis():
     files = sorted(glob.glob("data/analysis/week_*.json"))
     if not files:
         return None
-    with open(files[-1]) as f:
+    with open(files[-1], encoding="utf-8") as f:
         return json.load(f)
-
-
-def load_performance_log():
-    path = "tracker/performance_log.csv"
-    if not os.path.exists(path):
-        return []
-    with open(path) as f:
-        return list(csv.DictReader(f))
 
 
 def load_all_picks():
     path = "docs/data/all_picks.json"
     if os.path.exists(path):
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             return json.load(f)
     return {"picks": [], "weekly_summaries": []}
 
@@ -167,6 +162,41 @@ def build_dashboard_json(data):
     }
 
 
+def persist_picks_to_db(picks, week, year):
+    """Insert newly-created pending picks into data/cfb.db, tagged pick_type='live'
+    so real model output can never be co-mingled with backfilled/synthetic test data."""
+    now = datetime.utcnow().isoformat()
+    conn = db.get_connection()
+    try:
+        for pick in picks:
+            conn.execute(
+                """
+                INSERT INTO picks (
+                    game_id, week, year, home_team, away_team,
+                    consensus_spread, projected_spread, edge, recommended_side, units,
+                    confidence_signals, key_factors, line_movement, weather, risk_flags,
+                    qualifies, status, result, clv, unit_pl, pick_type, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, NULL, NULL, 'live', ?)
+                """,
+                (
+                    pick.get("game_id"), week, year, pick.get("home_team"), pick.get("away_team"),
+                    pick.get("consensus_spread"), pick.get("projected_spread"), pick.get("edge"),
+                    pick.get("recommended_side"), pick.get("units"),
+                    json.dumps(pick.get("confidence_signals", [])),
+                    json.dumps(pick.get("key_factors", [])),
+                    pick.get("line_movement"),
+                    json.dumps(pick.get("weather", {})),
+                    json.dumps(pick.get("risk_flags", [])),
+                    int(bool(pick.get("qualifies"))),
+                    now,
+                ),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    return len(picks)
+
+
 def main():
     data = load_latest_analysis()
     if not data:
@@ -180,7 +210,7 @@ def main():
     os.makedirs("outputs", exist_ok=True)
     md = generate_markdown_report(data)
     md_path = f"outputs/week_{week}_{year}_report.md"
-    with open(md_path, "w") as f:
+    with open(md_path, "w", encoding="utf-8") as f:
         f.write(md)
     print(f"Markdown report: {md_path}")
 
@@ -188,7 +218,7 @@ def main():
     os.makedirs("docs/data", exist_ok=True)
     dashboard_payload = build_dashboard_json(data)
     week_json_path = f"docs/data/week_{week}_{year}.json"
-    with open(week_json_path, "w") as f:
+    with open(week_json_path, "w", encoding="utf-8") as f:
         json.dump(dashboard_payload, f, indent=2)
     print(f"Dashboard JSON: {week_json_path}")
 
@@ -217,7 +247,11 @@ def main():
             "status": "pending"
         })
 
-    with open("docs/data/all_picks.json", "w") as f:
+        with db.log_run("report_picks") as run:
+            run["rows_added"] = persist_picks_to_db(dashboard_payload["all_picks"], week, year)
+        print(f"Persisted {run['rows_added']} picks to {db.DB_PATH}")
+
+    with open("docs/data/all_picks.json", "w", encoding="utf-8") as f:
         json.dump(all_picks, f, indent=2)
     print("Updated docs/data/all_picks.json")
 
@@ -225,7 +259,7 @@ def main():
     weeks_index_path = "docs/data/weeks_index.json"
     existing_index = []
     if os.path.exists(weeks_index_path):
-        with open(weeks_index_path) as f:
+        with open(weeks_index_path, encoding="utf-8") as f:
             existing_index = json.load(f)
 
     week_entry = {
@@ -239,7 +273,7 @@ def main():
     existing_index.append(week_entry)
     existing_index.sort(key=lambda x: (x["year"], x["week"]), reverse=True)
 
-    with open(weeks_index_path, "w") as f:
+    with open(weeks_index_path, "w", encoding="utf-8") as f:
         json.dump(existing_index, f, indent=2)
     print("Updated weeks_index.json")
 

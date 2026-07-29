@@ -31,9 +31,19 @@ jobs:
         run: python models/update_results.py
 
       - name: Commit updated data
+        # Two fixes here:
+        # 1. `tracker/` is removed from `git add` — nothing in the codebase has ever
+        #    written that directory, so `git add` was hitting an unmatched pathspec and
+        #    failing with a fatal error (exit 128) on every run, before `git commit` ever
+        #    executed. That's why models/weights.json has no history: this step was
+        #    silently failing every single week.
+        # 2. data/cfb.db added — update_results.py now writes final scores into `games`
+        #    and settles `picks` in the DB (in addition to the docs/data/ JSON), and this
+        #    is also what fetch_closing_lines() reads for CLV, replacing the old
+        #    data/spreads/current_week_*.json read that never survived to Monday.
         run: |
           git config user.name "cfb-bot"
           git config user.email "bot@cfb-betting-system"
-          git add docs/data/ models/weights.json tracker/
+          git add docs/data/ models/weights.json data/cfb.db
           git diff --staged --quiet || git commit -m "Results update $(date +'%Y-%m-%d')"
           git push

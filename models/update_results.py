@@ -9,9 +9,13 @@ Runs every Monday after games complete.
 
 import json
 import os
+import sys
 import glob
 import requests
 from datetime import datetime
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import db
 
 CFBD_API_KEY = os.environ.get("CFBD_API_KEY", "")
 CFBD_BASE = "https://api.collegefootballdata.com"
@@ -32,14 +36,29 @@ def fetch_game_results(year, week):
 
 def fetch_closing_lines(year, week):
     """
-    In a real system you'd pull historical closing lines from a paid source.
-    This uses the last saved 'current' odds file as a proxy.
+    Closing line proxy: the most recent 'current' consensus line saved in
+    data/cfb.db for this week (fetch_odds.py persists every pull there, so
+    this survives across CI runs — the old JSON-file version did not, since
+    data/spreads/ is never committed and is gone by the time this runs on
+    Monday).
     """
-    path = f"data/spreads/current_week_{week}_{year}.json"
-    if not os.path.exists(path):
-        return {}
-    with open(path) as f:
-        return {g["home_team"] + g["away_team"]: g for g in json.load(f)}
+    conn = db.get_connection()
+    try:
+        rows = conn.execute(
+            """
+            SELECT home_team, away_team, home_spread, MAX(fetched_at)
+            FROM betting_lines
+            WHERE season = ? AND week = ? AND line_type = 'current' AND book = 'consensus'
+            GROUP BY home_team, away_team
+            """,
+            (year, week),
+        ).fetchall()
+    finally:
+        conn.close()
+    return {
+        home + away: {"consensus_home_spread": spread}
+        for home, away, spread, _ in rows
+    }
 
 
 def determine_ats_result(pick, actual_home_score, actual_away_score):
@@ -167,130 +186,171 @@ def update_weights(all_picks, current_weights):
     return new_weights, needs_recalibration
 
 
-def main():
-    # Load all picks
-    picks_path = "docs/data/all_picks.json"
-    if not os.path.exists(picks_path):
-        print("No picks file found.")
-        return
-
-    with open(picks_path) as f:
-        all_picks = json.load(f)
-
-    # Find pending picks
-    pending = [p for p in all_picks["picks"] if p.get("status") == "pending"]
-    if not pending:
-        print("No pending picks to update.")
-        return
-
-    # Group by week/year
-    weeks = {}
-    for pick in pending:
-        key = (pick["week"], pick["year"])
-        weeks.setdefault(key, []).append(pick)
-
-    for (week, year), picks in weeks.items():
-        print(f"Updating results for Week {week}, {year}...")
-        results = fetch_game_results(year, week)
-        closing_lines = fetch_closing_lines(year, week)
-
-        week_wins = week_losses = week_pushes = 0
-        week_unit_pl = 0.0
-
-        for pick in picks:
-            gid = int(pick.get("game_id", 0))
-            game_result = results.get(gid, {})
-
+def persist_results_to_db(results, settled_picks):
+    """Update games with final scores and picks with result/clv/unit_pl."""
+    now = datetime.utcnow().isoformat()
+    conn = db.get_connection()
+    rows_touched = 0
+    try:
+        for game_id, game_result in results.items():
             home_score = game_result.get("home_points")
-            away_score = game_result.get("away_points")
-
             if home_score is None:
-                # Game not yet final
                 continue
+            conn.execute(
+                """
+                UPDATE games SET home_points = ?, away_points = ?, completed = 1
+                WHERE game_id = ?
+                """,
+                (home_score, game_result.get("away_points"), game_id),
+            )
 
-            result = determine_ats_result(pick, home_score, away_score)
-            clv = calculate_clv(pick, closing_lines)
-            unit_pl = calculate_unit_pl(result, pick.get("units", 1))
+        for pick in settled_picks:
+            conn.execute(
+                """
+                UPDATE picks SET result = ?, clv = ?, unit_pl = ?, status = 'settled'
+                WHERE game_id = ? AND week = ? AND year = ? AND pick_type = 'live'
+                """,
+                (
+                    pick["result"], pick["clv"], pick["unit_pl"],
+                    int(pick.get("game_id", 0)), pick["week"], pick["year"],
+                ),
+            )
+            rows_touched += 1
+        conn.commit()
+    finally:
+        conn.close()
+    return rows_touched
 
-            pick["result"] = result
-            pick["clv"] = clv
-            pick["unit_pl"] = unit_pl
-            pick["status"] = "settled"
-            pick["home_final"] = home_score
-            pick["away_final"] = away_score
 
-            if result == "win":
-                week_wins += 1
-            elif result == "loss":
-                week_losses += 1
-            elif result == "push":
-                week_pushes += 1
-            week_unit_pl += unit_pl
+def main():
+    with db.log_run("results_update") as run:
+        # Load all picks
+        picks_path = "docs/data/all_picks.json"
+        if not os.path.exists(picks_path):
+            print("No picks file found.")
+            return
 
-        # Update weekly summary
-        for summary in all_picks["weekly_summaries"]:
-            if summary["week"] == week and summary["year"] == year:
-                summary["wins"] = week_wins
-                summary["losses"] = week_losses
-                summary["pushes"] = week_pushes
-                summary["unit_pl"] = round(week_unit_pl, 3)
-                summary["status"] = "settled"
-                break
+        with open(picks_path, encoding="utf-8") as f:
+            all_picks = json.load(f)
 
-    # Self-learning: update weights
-    weights_path = "models/weights.json"
-    current_weights = {}
-    if os.path.exists(weights_path):
-        with open(weights_path) as f:
-            current_weights = json.load(f)
+        # Find pending picks
+        pending = [p for p in all_picks["picks"] if p.get("status") == "pending"]
+        if not pending:
+            print("No pending picks to update.")
+            return
 
-    from spread_model import load_weights
-    current_weights = current_weights or load_weights()
-    new_weights, needs_recal = update_weights(all_picks, current_weights)
+        # Group by week/year
+        weeks = {}
+        for pick in pending:
+            key = (pick["week"], pick["year"])
+            weeks.setdefault(key, []).append(pick)
 
-    os.makedirs("models", exist_ok=True)
-    with open(weights_path, "w") as f:
-        json.dump(new_weights, f, indent=2)
-    print(f"Weights updated to version {new_weights['version']}")
+        for (week, year), picks in weeks.items():
+            print(f"Updating results for Week {week}, {year}...")
+            results = fetch_game_results(year, week)
+            closing_lines = fetch_closing_lines(year, week)
 
-    if needs_recal:
-        print("⚠️  RECALIBRATION TRIGGERED: 3+ consecutive losing weeks detected.")
-        print("Consider reviewing model inputs and adjusting edge threshold.")
+            week_wins = week_losses = week_pushes = 0
+            week_unit_pl = 0.0
+            week_settled = []
 
-    # Save updated picks
-    with open(picks_path, "w") as f:
-        json.dump(all_picks, f, indent=2)
+            for pick in picks:
+                gid = int(pick.get("game_id", 0))
+                game_result = results.get(gid, {})
 
-    # Update aggregate performance stats for dashboard
-    all_settled = [p for p in all_picks["picks"] if p.get("status") == "settled"]
-    total_wins = sum(1 for p in all_settled if p["result"] == "win")
-    total_losses = sum(1 for p in all_settled if p["result"] == "loss")
-    total_pushes = sum(1 for p in all_settled if p["result"] == "push")
-    total_pl = sum(p.get("unit_pl", 0) for p in all_settled)
-    clv_positive = sum(
-        1 for p in all_settled if p.get("clv") and p["clv"] > 0
-    )
-    clv_total = sum(1 for p in all_settled if p.get("clv") is not None)
+                home_score = game_result.get("home_points")
+                away_score = game_result.get("away_points")
 
-    stats = {
-        "total_wins": total_wins,
-        "total_losses": total_losses,
-        "total_pushes": total_pushes,
-        "total_unit_pl": round(total_pl, 2),
-        "clv_positive_rate": round(clv_positive / max(clv_total, 1), 3),
-        "win_rate": round(total_wins / max(total_wins + total_losses, 1), 3),
-        "by_tier": {
-            "3_unit": _tier_stats(all_settled, 3),
-            "2_unit": _tier_stats(all_settled, 2),
-            "1_unit": _tier_stats(all_settled, 1),
-        },
-        "weekly_summaries": all_picks["weekly_summaries"],
-        "last_updated": datetime.utcnow().isoformat()
-    }
+                if home_score is None:
+                    # Game not yet final
+                    continue
 
-    with open("docs/data/performance_stats.json", "w") as f:
-        json.dump(stats, f, indent=2)
-    print("Performance stats saved to docs/data/performance_stats.json")
+                result = determine_ats_result(pick, home_score, away_score)
+                clv = calculate_clv(pick, closing_lines)
+                unit_pl = calculate_unit_pl(result, pick.get("units", 1))
+
+                pick["result"] = result
+                pick["clv"] = clv
+                pick["unit_pl"] = unit_pl
+                pick["status"] = "settled"
+                pick["home_final"] = home_score
+                pick["away_final"] = away_score
+
+                if result == "win":
+                    week_wins += 1
+                elif result == "loss":
+                    week_losses += 1
+                elif result == "push":
+                    week_pushes += 1
+                week_unit_pl += unit_pl
+                week_settled.append(pick)
+
+            # Update weekly summary
+            for summary in all_picks["weekly_summaries"]:
+                if summary["week"] == week and summary["year"] == year:
+                    summary["wins"] = week_wins
+                    summary["losses"] = week_losses
+                    summary["pushes"] = week_pushes
+                    summary["unit_pl"] = round(week_unit_pl, 3)
+                    summary["status"] = "settled"
+                    break
+
+            run["rows_added"] += persist_results_to_db(results, week_settled)
+
+        # Self-learning: update weights
+        weights_path = "models/weights.json"
+        current_weights = {}
+        if os.path.exists(weights_path):
+            with open(weights_path, encoding="utf-8") as f:
+                current_weights = json.load(f)
+
+        from spread_model import load_weights
+        current_weights = current_weights or load_weights()
+        new_weights, needs_recal = update_weights(all_picks, current_weights)
+
+        os.makedirs("models", exist_ok=True)
+        with open(weights_path, "w", encoding="utf-8") as f:
+            json.dump(new_weights, f, indent=2)
+        print(f"Weights updated to version {new_weights['version']}")
+
+        if needs_recal:
+            print("⚠️  RECALIBRATION TRIGGERED: 3+ consecutive losing weeks detected.")
+            print("Consider reviewing model inputs and adjusting edge threshold.")
+
+        # Save updated picks
+        with open(picks_path, "w", encoding="utf-8") as f:
+            json.dump(all_picks, f, indent=2)
+
+        # Update aggregate performance stats for dashboard
+        all_settled = [p for p in all_picks["picks"] if p.get("status") == "settled"]
+        total_wins = sum(1 for p in all_settled if p["result"] == "win")
+        total_losses = sum(1 for p in all_settled if p["result"] == "loss")
+        total_pushes = sum(1 for p in all_settled if p["result"] == "push")
+        total_pl = sum(p.get("unit_pl", 0) for p in all_settled)
+        clv_positive = sum(
+            1 for p in all_settled if p.get("clv") and p["clv"] > 0
+        )
+        clv_total = sum(1 for p in all_settled if p.get("clv") is not None)
+
+        stats = {
+            "total_wins": total_wins,
+            "total_losses": total_losses,
+            "total_pushes": total_pushes,
+            "total_unit_pl": round(total_pl, 2),
+            "clv_positive_rate": round(clv_positive / max(clv_total, 1), 3),
+            "win_rate": round(total_wins / max(total_wins + total_losses, 1), 3),
+            "by_tier": {
+                "3_unit": _tier_stats(all_settled, 3),
+                "2_unit": _tier_stats(all_settled, 2),
+                "1_unit": _tier_stats(all_settled, 1),
+            },
+            "weekly_summaries": all_picks["weekly_summaries"],
+            "last_updated": datetime.utcnow().isoformat()
+        }
+
+        with open("docs/data/performance_stats.json", "w", encoding="utf-8") as f:
+            json.dump(stats, f, indent=2)
+        print("Performance stats saved to docs/data/performance_stats.json")
 
 
 def _tier_stats(picks, units):

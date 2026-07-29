@@ -5,9 +5,13 @@ Run via GitHub Actions every Tuesday morning.
 """
 
 import os
+import sys
 import json
 import requests
 from datetime import datetime
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import db
 
 CFBD_API_KEY = os.environ.get("CFBD_API_KEY", "")
 CFBD_BASE = "https://api.collegefootballdata.com"
@@ -115,65 +119,146 @@ def fetch_weather(game):
         return {}
 
 
+def persist_to_db(games, enriched_games):
+    """Write raw games/stats/weather into data/cfb.db so they survive past this CI run."""
+    now = datetime.utcnow().isoformat()
+    conn = db.get_connection()
+    rows_added = 0
+    try:
+        for game in games:
+            conn.execute(
+                """
+                INSERT INTO games (
+                    game_id, season, week, season_type, start_date,
+                    home_team, away_team, venue, venue_latitude, venue_longitude,
+                    neutral_site, conference_game
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(game_id) DO UPDATE SET
+                    start_date=excluded.start_date,
+                    venue=excluded.venue,
+                    venue_latitude=excluded.venue_latitude,
+                    venue_longitude=excluded.venue_longitude,
+                    neutral_site=excluded.neutral_site,
+                    conference_game=excluded.conference_game
+                """,
+                (
+                    game.get("id"), game.get("season"), game.get("week"),
+                    game.get("season_type"), game.get("start_date"),
+                    game.get("home_team"), game.get("away_team"), game.get("venue"),
+                    game.get("venue_latitude"), game.get("venue_longitude"),
+                    int(bool(game.get("neutral_site"))), int(bool(game.get("conference_game"))),
+                ),
+            )
+            rows_added += 1
+
+        for enriched in enriched_games:
+            game_id = enriched["game_id"]
+            week = enriched["week"]
+            year = enriched["year"]
+            weather = enriched.get("weather") or {}
+
+            for side, team, sp, off_epa, def_epa, record in (
+                ("home", enriched["home_team"], enriched["home_sp"],
+                 enriched["home_offense_epa"], enriched["home_defense_epa"], enriched["home_record"]),
+                ("away", enriched["away_team"], enriched["away_sp"],
+                 enriched["away_offense_epa"], enriched["away_defense_epa"], enriched["away_record"]),
+            ):
+                conn.execute(
+                    """
+                    INSERT INTO team_game_stats (
+                        game_id, season, week, team, sp_rating,
+                        offense_epa_play, defense_epa_play, wins, losses,
+                        source, fetched_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'cfbd', ?)
+                    """,
+                    (
+                        game_id, year, week, team, sp, off_epa, def_epa,
+                        (record or {}).get("wins"), (record or {}).get("losses"), now,
+                    ),
+                )
+                rows_added += 1
+
+            if weather:
+                conn.execute(
+                    """
+                    INSERT INTO weather (
+                        game_id, captured_at, temp_f, wind_mph, precip_pct,
+                        is_forecast, source
+                    ) VALUES (?, ?, ?, ?, ?, 1, 'open-meteo')
+                    """,
+                    (game_id, now, weather.get("temp_f"), weather.get("wind_mph"), weather.get("precip_pct")),
+                )
+                rows_added += 1
+
+        conn.commit()
+    finally:
+        conn.close()
+    return rows_added
+
+
 def main():
-    week, year = get_current_week()
-    is_offseason = week == 1 and datetime.utcnow().month < 8
-    print(f"Running in {'OFFSEASON' if is_offseason else 'SEASON'} mode")
-    print(f"Fetching data for Week {week}, {year}")
+    with db.log_run("cfbd_stats") as run:
+        week, year = get_current_week()
+        is_offseason = week == 1 and datetime.utcnow().month < 8
+        print(f"Running in {'OFFSEASON' if is_offseason else 'SEASON'} mode")
+        print(f"Fetching data for Week {week}, {year}")
 
-    games = fetch_games(year, week)
+        games = fetch_games(year, week)
 
-    if not games:
-        print("No games found — likely offseason. Saving empty placeholder.")
-        os.makedirs("data/stats", exist_ok=True)
-        out_path = f"data/stats/week_{week}_{year}.json"
-        with open(out_path, "w") as f:
-            json.dump({
+        if not games:
+            print("No games found — likely offseason. Saving empty placeholder.")
+            os.makedirs("data/stats", exist_ok=True)
+            out_path = f"data/stats/week_{week}_{year}.json"
+            with open(out_path, "w", encoding="utf-8") as f:
+                json.dump({
+                    "week": week,
+                    "year": year,
+                    "offseason": True,
+                    "games": []
+                }, f, indent=2)
+            print(f"Saved placeholder to {out_path}")
+            return
+
+        sp_ratings = fetch_sp_ratings(year)
+        epa_stats = fetch_epa_stats(year, week)
+        records = fetch_team_records(year)
+
+        enriched_games = []
+        for game in games:
+            home = game.get("home_team", "")
+            away = game.get("away_team", "")
+            enriched = {
+                "game_id": game.get("id"),
                 "week": week,
                 "year": year,
-                "offseason": True,
-                "games": []
-            }, f, indent=2)
-        print(f"Saved placeholder to {out_path}")
-        return
+                "home_team": home,
+                "away_team": away,
+                "start_time": game.get("start_date"),
+                "venue": game.get("venue"),
+                "venue_latitude": game.get("venue_latitude"),
+                "venue_longitude": game.get("venue_longitude"),
+                "neutral_site": game.get("neutral_site", False),
+                "conference_game": game.get("conference_game", False),
+                "home_sp": sp_ratings.get(home, {}).get("rating", None),
+                "away_sp": sp_ratings.get(away, {}).get("rating", None),
+                "home_offense_epa": epa_stats.get(home, {}).get("offense", {}).get("epa_per_play", None),
+                "away_offense_epa": epa_stats.get(away, {}).get("offense", {}).get("epa_per_play", None),
+                "home_defense_epa": epa_stats.get(home, {}).get("defense", {}).get("epa_per_play", None),
+                "away_defense_epa": epa_stats.get(away, {}).get("defense", {}).get("epa_per_play", None),
+                "home_record": records.get(home, {}).get("total", {}),
+                "away_record": records.get(away, {}).get("total", {}),
+                "weather": fetch_weather(game),
+            }
+            enriched_games.append(enriched)
 
-    sp_ratings = fetch_sp_ratings(year)
-    epa_stats = fetch_epa_stats(year, week)
-    records = fetch_team_records(year)
+        os.makedirs("data/stats", exist_ok=True)
+        out_path = f"data/stats/week_{week}_{year}.json"
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump({"week": week, "year": year, "games": enriched_games}, f, indent=2)
+        print(f"Saved {len(enriched_games)} games to {out_path}")
 
-    enriched_games = []
-    for game in games:
-        home = game.get("home_team", "")
-        away = game.get("away_team", "")
-        enriched = {
-            "game_id": game.get("id"),
-            "week": week,
-            "year": year,
-            "home_team": home,
-            "away_team": away,
-            "start_time": game.get("start_date"),
-            "venue": game.get("venue"),
-            "venue_latitude": game.get("venue_latitude"),
-            "venue_longitude": game.get("venue_longitude"),
-            "neutral_site": game.get("neutral_site", False),
-            "conference_game": game.get("conference_game", False),
-            "home_sp": sp_ratings.get(home, {}).get("rating", None),
-            "away_sp": sp_ratings.get(away, {}).get("rating", None),
-            "home_offense_epa": epa_stats.get(home, {}).get("offense", {}).get("epa_per_play", None),
-            "away_offense_epa": epa_stats.get(away, {}).get("offense", {}).get("epa_per_play", None),
-            "home_defense_epa": epa_stats.get(home, {}).get("defense", {}).get("epa_per_play", None),
-            "away_defense_epa": epa_stats.get(away, {}).get("defense", {}).get("epa_per_play", None),
-            "home_record": records.get(home, {}).get("total", {}),
-            "away_record": records.get(away, {}).get("total", {}),
-            "weather": fetch_weather(game),
-        }
-        enriched_games.append(enriched)
-
-    os.makedirs("data/stats", exist_ok=True)
-    out_path = f"data/stats/week_{week}_{year}.json"
-    with open(out_path, "w") as f:
-        json.dump({"week": week, "year": year, "games": enriched_games}, f, indent=2)
-    print(f"Saved {len(enriched_games)} games to {out_path}")
+        run["rows_added"] = persist_to_db(games, enriched_games)
+        print(f"Persisted {run['rows_added']} rows to {db.DB_PATH}")
 
 
 if __name__ == "__main__":

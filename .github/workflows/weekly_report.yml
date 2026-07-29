@@ -41,9 +41,14 @@ jobs:
         run: python models/generate_report.py
 
       - name: Commit and push output
+        # data/cfb.db added here — previously fetch_stats.py and fetch_odds.py wrote
+        # their raw output to data/stats/ and data/spreads/, which were NEVER committed
+        # by this workflow, so every week's raw stats/lines were discarded as soon as
+        # the job finished. Both scripts now also write into data/cfb.db (append-only,
+        # timestamped), so committing that one file keeps full history instead.
         run: |
           git config user.name "cfb-bot"
           git config user.email "bot@cfb-betting-system"
-          git add docs/data/ outputs/
+          git add docs/data/ outputs/ data/cfb.db
           git diff --staged --quiet || git commit -m "Week auto-report $(date +'%Y-%m-%d')"
           git push
