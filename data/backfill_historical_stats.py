@@ -103,8 +103,12 @@ def backfill_season(conn, year, force=False):
 
         sp = sp_ratings.get(team, {}).get("rating")
         team_epa = epa_stats.get(team, {})
-        off_epa = team_epa.get("offense", {}).get("epa_per_play")
-        def_epa = team_epa.get("defense", {}).get("epa_per_play")
+        # CFBD calls this "ppa" (predicted points added per play) -- verified live
+        # 2026-07-29 that ppa == totalPPA / plays, i.e. it's already the per-play
+        # average, commonly known elsewhere as EPA/play. Kept consistent with the
+        # same field used in fetch_stats.py's weekly write path.
+        off_epa = team_epa.get("offense", {}).get("ppa")
+        def_epa = team_epa.get("defense", {}).get("ppa")
         off_success = team_epa.get("offense", {}).get("successRate")
         def_success = team_epa.get("defense", {}).get("successRate")
         havoc = team_epa.get("defense", {}).get("havoc", {}).get("total")

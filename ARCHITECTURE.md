@@ -200,3 +200,51 @@ Second run (same args, no --force):             1 API call (teams list only), 0 
 Final `data/cfb.db` in that test: `teams` = 2, `team_game_stats` = 4, `ingestion_runs` shows both runs logged (`rows_added` 4 and 0 respectively). This confirms idempotency and incrementality end-to-end, not just at the unit level.
 
 **Same outstanding item as Phase 1**: no live `CFBD_API_KEY` in this environment, so field-name assumptions for `/stats/season/advanced` (`successRate`, `havoc.total`) and `/teams` (`classification`, `division`) are best-guess based on the CFBD docs, unverified against a real response. Fold this into the same pre-Week-0 live-API verification pass already flagged in §7 — run `backfill_historical_stats.py --start-year 2019 --end-year 2025` for real and spot-check a few known teams' numbers before trusting the table.
+
+## 9. Live CFBD verification (2026-07-29, `verify_cfbd_fields.py` against 2025 week 10)
+
+Ran `make verify-cfbd`-equivalent against real CFBD data once the owner added `CFBD_API_KEY`/`ODDS_API_KEY` to a local `.env`. Confirmed two things were right, found four things wrong (two more than the two we set out to check), fixed all four in both `fetch_stats.py` and `update_results.py`, and re-verified.
+
+### 1. What CFBD actually returned
+
+**Confirmed correct** (no change needed): `offense.successRate` / `defense.successRate` and `defense.havoc.total` — exactly what `backfill_historical_stats.py` and Phase 2's addition to `fetch_stats.py` assumed. Also confirmed correct: `/records`' `total.wins`/`total.losses`, and every field on `/teams` (`id`, `school`, `conference`, `classification`, `division`).
+
+**Wrong, fixed:**
+
+| Assumed | Actual | Where it was wrong |
+|---|---|---|
+| `epa_per_play` (under `offense`/`defense`) | `ppa` | `fetch_stats.py` (weekly path) and `backfill_historical_stats.py` (historical path) — both fixed. Verified `ppa == totalPPA / plays` exactly, confirming it's the correct per-play average. |
+| `home_team` / `away_team` (and `season_type`, `start_date`, `neutral_site`, `conference_game`) | `homeTeam` / `awayTeam` (`seasonType`, `startDate`, `neutralSite`, `conferenceGame`) | `/games` is camelCase throughout. This bug **predates every phase in this project** — it was in the original `fetch_stats.py` before Phase 0. Its effect: `home`/`away` were always `""` for any real (non-offseason) week, meaning SP+/EPA/record lookups (`sp_ratings.get(home, ...)`) always missed and returned defaults. **The pipeline has never correctly enriched a real game with real stats until this fix.** |
+| `"division": "fbs"` param on `/games` | `"classification": "fbs"` | Silently ignored by CFBD — verified: `division=fbs` returned 304 games (FBS+FCS+D-II+D-III mixed) for a week that has 52 actual FBS games; `classification=fbs` returned exactly 52, all `homeClassification`/`awayClassification` = `"fbs"`. Fixed in `fetch_stats.py::fetch_games()` and `update_results.py::fetch_game_results()` (both called `/games` with the same wrong param). |
+| `home_points` / `away_points` | `homePoints` / `awayPoints` | `update_results.py` — `determine_ats_result()`'s early-return (`if actual_home_score is None: return "pending"`) means **every pick has always settled as `"pending"` forever**, never actually graded W/L/Push. Found and fixed alongside the `division` bug since both live in the same `/games` response. |
+
+**Confirmed absent, not a bug** — `venue_latitude`/`venue_longitude` genuinely don't exist anywhere in `/games` (only a `venue` name string and `venueId`). Getting coordinates needs a separate `/venues` lookup joined by `venueId` — this was always going to be Phase 4 work ("build a stadium lat/long reference table"), and now we know precisely why weather has never populated: `fetch_weather()`'s guard clause (`if not venue_lat or not venue_lon: return {}`) has been correctly returning empty every time, exactly as designed for missing data, just on a field that was never going to be there without a `/venues` join. Not fixed here — flagged for Phase 4, where it belongs.
+
+### 2. Did it land in `cfb.db` correctly?
+
+Ran a real one-week ingestion (2025 week 10 — a completed week from last season, not the full 2019+ backfill, per instruction) using the fixed code, after cleaning out the one batch written with the pre-fix `division` bug (304 games / 912 rows — deleted `team_game_stats` before `games` to satisfy the FK constraint, then re-ran clean):
+
+```
+games:            52   (matches classification=fbs sanity check)
+team_game_stats: 104   (2 per game: home + away)
+```
+
+Sample row, real data: `Kennesaw State` — `sp_rating=-5.4`, `offense_epa_play=0.170`, `defense_epa_play=0.157`, `offense_success_rate=0.413`, `defense_success_rate=0.421`, `havoc_rate=0.168`. All in plausible ranges. Team names are real (`UTEP @ Kennesaw State`, `Florida @ Georgia`, etc.), not the empty strings the pre-fix code would have produced.
+
+Also separately verified the `update_results.py` write path: fetched real final scores for the same 52 games via the fixed `fetch_game_results()`, ran `persist_results_to_db()` against them (no picks existed for this week to settle — this was plumbing verification, not a real betting week), and confirmed the `games` table updated correctly: e.g. `Arkansas 35 – Mississippi State 38, completed=1`.
+
+`ingestion_runs` now shows the full trail, including the dirty run that got cleaned up (kept as an honest audit log rather than deleted):
+```
+migration_json_to_sqlite            success    0
+cfbd_stats_live_verification        success    912   <- pre-fix, data since deleted
+cfbd_stats_live_verification_fixed  success    156   <- post-fix, real data kept (52+104)
+results_update_live_verification    success    52
+```
+
+### 3. Fixture vs. reality — what Phases 1 and 2's assumptions got wrong
+
+Every fixture used in the Phase 1/2 pytest suite and manual verification used **snake_case field names** (`home_team`, `epa_per_play`, `home_points`, etc.) because that's what the pre-existing code (and my extensions to it) assumed. Fixtures, by construction, can only validate that code does what it's written to do — they can't catch a wrong assumption baked into both the code and the fixture. That's exactly what happened here on four separate fields, and it's why this live check was worth doing before Phase 3 rather than after: Phase 3 (`betting_lines`) will lean on `games.game_id`/`home_team`/`away_team` being correct to join odds to games, which they are now, but silently weren't before.
+
+`verify_cfbd_fields.py`'s own checklist has been updated to check the corrected field names (`ppa`, `homeTeam`, `classification`, `homePoints`, etc.) rather than the original guesses, so re-running `make verify-cfbd` in the future is checking "does the code's current assumption still hold," not "was the original guess right."
+
+All 14 pytest tests still pass (fixtures updated to use `ppa` instead of `epa_per_play` in `test_backfill_historical_stats.py`). Not yet committed — pending review.

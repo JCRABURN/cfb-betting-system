@@ -25,10 +25,14 @@ ODDS_BASE = "https://api.the-odds-api.com/v4"
 
 
 def fetch_game_results(year, week):
-    """Get final scores from CFBD."""
+    """Get final scores from CFBD.
+
+    "classification", not "division" -- verified live 2026-07-29 that
+    "division" is silently ignored by /games (see fetch_stats.fetch_games()).
+    """
     url = f"{CFBD_BASE}/games"
     resp = requests.get(url, headers=HEADERS, params={
-        "year": year, "week": week, "division": "fbs"
+        "year": year, "week": week, "classification": "fbs"
     })
     resp.raise_for_status()
     return {g["id"]: g for g in resp.json()}
@@ -193,7 +197,9 @@ def persist_results_to_db(results, settled_picks):
     rows_touched = 0
     try:
         for game_id, game_result in results.items():
-            home_score = game_result.get("home_points")
+            # CFBD's /games response is camelCase (verified live 2026-07-29):
+            # homePoints/awayPoints, not home_points/away_points.
+            home_score = game_result.get("homePoints")
             if home_score is None:
                 continue
             conn.execute(
@@ -201,7 +207,7 @@ def persist_results_to_db(results, settled_picks):
                 UPDATE games SET home_points = ?, away_points = ?, completed = 1
                 WHERE game_id = ?
                 """,
-                (home_score, game_result.get("away_points"), game_id),
+                (home_score, game_result.get("awayPoints"), game_id),
             )
 
         for pick in settled_picks:
@@ -258,8 +264,8 @@ def main():
                 gid = int(pick.get("game_id", 0))
                 game_result = results.get(gid, {})
 
-                home_score = game_result.get("home_points")
-                away_score = game_result.get("away_points")
+                home_score = game_result.get("homePoints")
+                away_score = game_result.get("awayPoints")
 
                 if home_score is None:
                     # Game not yet final

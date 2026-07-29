@@ -41,10 +41,16 @@ def get_current_week():
 
 
 def fetch_games(year, week):
-    """Get all D-I games for the given week."""
+    """Get all FBS games for the given week.
+
+    "division" is silently ignored by CFBD's /games endpoint (verified live
+    2026-07-29: it returned 304 games -- FBS, FCS, D-II, D-III all mixed
+    together -- for a week that has 52 actual FBS games). "classification" is
+    the correct param name; confirmed it returns exactly the 52 FBS-vs-FBS games.
+    """
     try:
         url = f"{CFBD_BASE}/games"
-        params = {"year": year, "week": week, "division": "fbs"}
+        params = {"year": year, "week": week, "classification": "fbs"}
         resp = requests.get(url, headers=HEADERS, params=params)
         resp.raise_for_status()
         return resp.json()
@@ -93,7 +99,14 @@ def fetch_team_records(year):
 
 
 def fetch_weather(game):
-    """Fetch weather forecast using Open-Meteo (free, no key required)."""
+    """Fetch weather forecast using Open-Meteo (free, no key required).
+
+    CFBD's /games response has no venue_latitude/venue_longitude (verified
+    live 2026-07-29) -- only a `venue` name and `venueId`. Getting coordinates
+    requires a separate /venues lookup joined by venueId, which doesn't exist
+    yet (tracked as Phase 4 work: "build a stadium lat/long reference table").
+    Until then this always returns {} for real games, same as it always has.
+    """
     venue_lat = game.get("venue_latitude")
     venue_lon = game.get("venue_longitude")
     if not venue_lat or not venue_lon:
@@ -148,11 +161,14 @@ def persist_to_db(games, enriched_games, epa_stats=None):
                     conference_game=excluded.conference_game
                 """,
                 (
+                    # CFBD's /games response is camelCase (verified live 2026-07-29);
+                    # venue_latitude/venue_longitude don't exist there at all -- see
+                    # fetch_weather()'s docstring.
                     game.get("id"), game.get("season"), game.get("week"),
-                    game.get("season_type"), game.get("start_date"),
-                    game.get("home_team"), game.get("away_team"), game.get("venue"),
+                    game.get("seasonType"), game.get("startDate"),
+                    game.get("homeTeam"), game.get("awayTeam"), game.get("venue"),
                     game.get("venue_latitude"), game.get("venue_longitude"),
-                    int(bool(game.get("neutral_site"))), int(bool(game.get("conference_game"))),
+                    int(bool(game.get("neutralSite"))), int(bool(game.get("conferenceGame"))),
                 ),
             )
             rows_added += 1
@@ -237,26 +253,31 @@ def main():
 
         enriched_games = []
         for game in games:
-            home = game.get("home_team", "")
-            away = game.get("away_team", "")
+            # CFBD's /games response is camelCase (verified live 2026-07-29):
+            # homeTeam/awayTeam, not home_team/away_team.
+            home = game.get("homeTeam", "")
+            away = game.get("awayTeam", "")
             enriched = {
                 "game_id": game.get("id"),
                 "week": week,
                 "year": year,
                 "home_team": home,
                 "away_team": away,
-                "start_time": game.get("start_date"),
+                "start_time": game.get("startDate"),
                 "venue": game.get("venue"),
                 "venue_latitude": game.get("venue_latitude"),
                 "venue_longitude": game.get("venue_longitude"),
-                "neutral_site": game.get("neutral_site", False),
-                "conference_game": game.get("conference_game", False),
+                "neutral_site": game.get("neutralSite", False),
+                "conference_game": game.get("conferenceGame", False),
                 "home_sp": sp_ratings.get(home, {}).get("rating", None),
                 "away_sp": sp_ratings.get(away, {}).get("rating", None),
-                "home_offense_epa": epa_stats.get(home, {}).get("offense", {}).get("epa_per_play", None),
-                "away_offense_epa": epa_stats.get(away, {}).get("offense", {}).get("epa_per_play", None),
-                "home_defense_epa": epa_stats.get(home, {}).get("defense", {}).get("epa_per_play", None),
-                "away_defense_epa": epa_stats.get(away, {}).get("defense", {}).get("epa_per_play", None),
+                # CFBD calls this "ppa" (predicted points added per play) -- verified
+                # live that ppa == totalPPA / plays, i.e. it's already the per-play
+                # average, commonly known elsewhere as EPA/play.
+                "home_offense_epa": epa_stats.get(home, {}).get("offense", {}).get("ppa", None),
+                "away_offense_epa": epa_stats.get(away, {}).get("offense", {}).get("ppa", None),
+                "home_defense_epa": epa_stats.get(home, {}).get("defense", {}).get("ppa", None),
+                "away_defense_epa": epa_stats.get(away, {}).get("defense", {}).get("ppa", None),
                 "home_record": records.get(home, {}).get("total", {}),
                 "away_record": records.get(away, {}).get("total", {}),
                 "weather": fetch_weather(game),

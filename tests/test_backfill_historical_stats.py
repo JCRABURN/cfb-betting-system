@@ -24,13 +24,13 @@ FIXTURES = {
     "/stats/season/advanced": [
         {
             "team": "Georgia",
-            "offense": {"epa_per_play": 0.25, "successRate": 0.48},
-            "defense": {"epa_per_play": -0.15, "successRate": 0.35, "havoc": {"total": 0.18}},
+            "offense": {"ppa": 0.25, "successRate": 0.48},
+            "defense": {"ppa": -0.15, "successRate": 0.35, "havoc": {"total": 0.18}},
         },
         {
             "team": "Alabama",
-            "offense": {"epa_per_play": 0.20, "successRate": 0.44},
-            "defense": {"epa_per_play": -0.10, "successRate": 0.38, "havoc": {"total": 0.15}},
+            "offense": {"ppa": 0.20, "successRate": 0.44},
+            "defense": {"ppa": -0.10, "successRate": 0.38, "havoc": {"total": 0.15}},
         },
     ],
     "/records": [
