@@ -247,4 +247,46 @@ Every fixture used in the Phase 1/2 pytest suite and manual verification used **
 
 `verify_cfbd_fields.py`'s own checklist has been updated to check the corrected field names (`ppa`, `homeTeam`, `classification`, `homePoints`, etc.) rather than the original guesses, so re-running `make verify-cfbd` in the future is checking "does the code's current assumption still hold," not "was the original guess right."
 
-All 14 pytest tests still pass (fixtures updated to use `ppa` instead of `epa_per_play` in `test_backfill_historical_stats.py`). Not yet committed — pending review.
+All 14 pytest tests still pass (fixtures updated to use `ppa` instead of `epa_per_play` in `test_backfill_historical_stats.py`). Committed as `5cc566e`.
+
+## 10. `division` → `classification`, `homePoints`/`awayPoints`, and the historical backfill (2026-07-29, same session)
+
+Two more real bugs surfaced by the same live-verification exercise, both in the shared `/games` endpoint, both fixed in every file that called it:
+
+- **`"division": "fbs"` is silently ignored by CFBD.** Verified: it returned 304 games (FBS+FCS+D-II+D-III all mixed) for a week that has 52 real FBS games; `"classification": "fbs"` returns exactly 52, all confirmed `homeClassification`/`awayClassification` = `"fbs"`. Fixed in `fetch_stats.py::fetch_games()` and `update_results.py::fetch_game_results()`.
+- **`homePoints`/`awayPoints`, not `home_points`/`away_points`.** Effect: `determine_ats_result()`'s null-check on the wrong key name meant **every pick has always settled as `"pending"` forever** — the grading system has never actually graded a single pick. Fixed in `update_results.py` (both the read and the `persist_results_to_db` write path). Verified by fetching real final scores for 2025 week 10 and confirming the `games` table update lands correctly (e.g. `Arkansas 35 – Mississippi State 38, completed=1`).
+
+Also found: every production script (`fetch_stats.py`, `fetch_odds.py`, `update_results.py`, `backfill_historical_stats.py`) reads `CFBD_API_KEY`/`ODDS_API_KEY` from `os.environ` but never loaded `.env` itself — only `verify_cfbd_fields.py` did. Moved a small `.env` loader into `db.py` (every script already does `import db` before reading its own key), so local runs now pick up `.env` automatically; GitHub Actions is unaffected since it sets real env vars and `.env` won't exist there.
+
+### Full 2019–2025 historical backfill — run for real
+
+With field names confirmed, ran `python data/backfill_historical_stats.py --start-year 2019 --end-year 2025` for real (per the owner's Q1: independent of Phase 3, no reason to wait). First pass revealed a data-quality issue: the team universe was built as `sp_ratings ∪ epa_stats ∪ records`, but `records` covers ~668 schools across every division while `sp_ratings`/`epa_stats` are inherently FBS-only (~136 teams) — 74% of the resulting rows (2,877 of 3,912) were non-FBS noise with `sp_rating IS NULL`. Fixed by dropping `records` from the team-universe union (still used as a wins/losses lookup, just not to decide which teams get a row), wiped the bad rows, re-ran clean:
+
+```
+teams: 136 (upserted from /teams, classification=fbs)
+team_game_stats (source=cfbd_historical_backfill): 931 rows across 2019-2025
+  (2019: 131, 2020: 131, 2021: 131, 2022: 132, 2023: 134, 2024: 135, 2025: 137 -- FBS expansion over time)
+  0 rows with NULL sp_rating
+```
+
+Spot-checked Georgia's row across all 7 seasons against known real history (15-0 in 2022, 14-1 in 2021, 12-2 in 2019, etc.) — all correct.
+
+## 11. Odds path verification and the team-name join fix (2026-07-29, same session)
+
+Owner asked whether `fetch_odds.py`'s field mapping had ever been checked against a live Odds API response, given it carries the same "fixtures share the code's own wrong assumption" risk just found on the CFBD side.
+
+**First attempt blocked at the network level** — `api.the-odds-api.com` returned `ConnectionResetError [WinError 10054]` on every attempt (Python `requests` and raw `curl` alike), even with a garbage API key, while CFBD worked fine from the same machine minutes earlier. 8 retries across two rounds all failed identically. Resolved once the owner switched off their work WiFi — confirms it was a network-level block (firewall/proxy) on that connection, not a code or API problem.
+
+**Field names: all correct, no fix needed.** Unlike CFBD, The Odds API's response matches `fetch_odds.py`'s assumptions exactly: `id`, `home_team`, `away_team`, `commence_time` at the top level; `bookmakers[].key`/`.markets`; `markets[].key` (confirmed `"spreads"`) /`.outcomes`; `outcomes[].name`/`.point`/`.price`. Quota check: 495/500 remaining.
+
+**But the live response surfaced something bigger than a field name: the team-name join was completely broken.** The Odds API includes the mascot in team names (`"TCU Horned Frogs"`, `"NC State Wolfpack"`); CFBD uses bare school names (`"TCU"`, `"NC State"`). Every single one of 126 real games had this mismatch. The existing join (`fetch_odds.py`'s `find_game_id()`, matching on exact `home_team`/`away_team` strings) would have failed for essentially every game in production — this is the "fragile team-name join" flagged as finding #6 in the original Phase 0 audit, now confirmed to be a near-total failure rather than an edge case.
+
+**Fix:** added `resolve_school_name()` to `fetch_odds.py` — longest-known-school-name-prefix match against the `teams` table (populated by the historical backfill above), applied before the `games` lookup and before storing `home_team`/`away_team` on `betting_lines` rows. Handles the general case (`"TCU Horned Frogs"` → `"TCU"`) and disambiguates real collisions correctly by preferring the longer match (`teams` has both `"Ohio"`/`"Ohio State"` and `"Miami"`/`"Miami (OH)"`).
+
+Spot-checking the real 126-game response surfaced further genuine mismatches that pure prefix-matching can't solve:
+- **Accent/apostrophe differences** (generic fix, no hardcoding needed): `"Hawai'i"` vs `"Hawaii"`, `"San José State"` vs `"San Jose State"`. Added `_normalize()` (strip accents via `unicodedata`, strip apostrophes) applied to both sides before comparing.
+- **Genuinely different abbreviations** (no shared prefix at all, needs an explicit mapping): `"App State"` vs `"Appalachian State"`, `"Massachusetts"` vs `"UMass"`, `"Southern Miss"` vs `"Southern Mississippi"`. Added `KNOWN_TEAM_ALIASES`, checked before prefix-matching. This is an open-ended, long-tail problem — more pairs will likely surface over time as more of the season's games are seen; the dict is meant to grow, not be exhaustive today.
+
+**Verified against the real 126-game response**: 208/252 team slots (82.5%) now resolve. Manually confirmed every one of the remaining 44 unresolved names is a genuine FCS/D-II opponent in a buy game (Abilene Christian, Alcorn State, Citadel, Furman, etc.) — none of them exist in the FBS-only `teams` table, so correctly falling through unresolved is the right behavior, not a bug. 11 new unit tests added in `tests/test_fetch_odds.py` covering the mascot-suffix case, the alias cases, the normalization cases, the Ohio/Miami disambiguation, and the fallback-when-unresolvable case. All 25 tests pass.
+
+Not yet committed — pending review, alongside whatever Phase 3 work (CFBD historical lines backfill) follows.

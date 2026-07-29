@@ -7,6 +7,7 @@ Stores opening and current lines for CLV tracking.
 import os
 import sys
 import json
+import unicodedata
 import requests
 from datetime import datetime
 
@@ -20,6 +21,19 @@ SPORT = "americanfootball_ncaaf"
 REGIONS = "us"
 MARKETS = "spreads"
 BOOKMAKERS = "draftkings,fanduel,betmgm,caesars"
+
+# Known cases (found by spot-checking a live Odds API response against our
+# CFBD-sourced teams table, 2026-07-29) where CFBD's official school name
+# shares no prefix at all with The Odds API's team name -- one side uses an
+# abbreviation the other doesn't. No amount of prefix-matching or accent
+# normalization fixes these; more may surface over time as new pairs are hit.
+# Keyed by the odds-side name (or its distinctive prefix), valued by the
+# corresponding CFBD school name.
+KNOWN_TEAM_ALIASES = {
+    "Appalachian State": "App State",
+    "UMass": "Massachusetts",
+    "Southern Mississippi": "Southern Miss",
+}
 
 
 def fetch_current_lines():
@@ -127,6 +141,48 @@ def calculate_line_movement(current_lines, opening_lines):
     return current_lines
 
 
+def load_school_names(conn):
+    return [r[0] for r in conn.execute("SELECT school FROM teams").fetchall()]
+
+
+def _normalize(name):
+    """Strip accents and apostrophes so "Hawai'i"/"Hawaii" and "San José"/
+    "San Jose" compare equal without needing a hardcoded alias for every
+    diacritic difference between the two APIs."""
+    name = name.replace("’", "'").replace("'", "")
+    nfkd = unicodedata.normalize("NFKD", name)
+    return "".join(c for c in nfkd if not unicodedata.combining(c))
+
+
+def resolve_school_name(schools, odds_team_name):
+    """The Odds API includes the mascot in team names (e.g. "TCU Horned Frogs",
+    "NC State Wolfpack"); CFBD uses bare school names ("TCU", "NC State") --
+    confirmed live 2026-07-29 against a real Odds API response, where every
+    single game had this mismatch. Resolve via longest-known-school-name-prefix
+    (after accent/apostrophe normalization), which also disambiguates cases
+    where one school name is a prefix of another (e.g. "Ohio" vs "Ohio State",
+    "Miami" vs "Miami (OH)" -- both pairs exist in the teams table; the longer,
+    more specific match always wins). KNOWN_TEAM_ALIASES is checked first for
+    the handful of cases with no shared prefix at all.
+
+    Falls back to the raw odds_team_name if nothing matches, so a resolution
+    failure never silently drops the row -- it just won't join to a CFBD game_id.
+    """
+    for alias, canonical in KNOWN_TEAM_ALIASES.items():
+        if (odds_team_name == alias or odds_team_name.startswith(alias + " ")) and canonical in schools:
+            return canonical
+
+    normalized_name = _normalize(odds_team_name)
+    for school in schools:
+        if _normalize(school) == normalized_name:
+            return school
+
+    candidates = [s for s in schools if normalized_name.startswith(_normalize(s) + " ")]
+    if not candidates:
+        return odds_team_name
+    return max(candidates, key=len)
+
+
 def find_game_id(conn, week, year, home, away):
     """Best-effort join to the CFBD games row via team name (Odds API has its own id space)."""
     row = conn.execute(
@@ -143,16 +199,23 @@ def persist_lines_to_db(games_list, week, year, line_type):
     conn = db.get_connection()
     rows_added = 0
     unmatched = 0
+    schools = load_school_names(conn)
+    if not schools:
+        print("WARNING: teams table is empty -- run data/backfill_historical_stats.py first, "
+              "otherwise every team name below will fail to resolve to a CFBD game_id.")
     try:
         for game in games_list:
-            home = game.get("home_team")
-            away = game.get("away_team")
+            raw_home = game.get("home_team")
+            raw_away = game.get("away_team")
+            home = resolve_school_name(schools, raw_home)
+            away = resolve_school_name(schools, raw_away)
             game_id = find_game_id(conn, week, year, home, away)
             if game_id is None:
                 unmatched += 1
 
             for book, sides in game.get("books", {}).items():
-                home_side = sides.get(home, {})
+                # sides is keyed by the odds API's own (mascot-suffixed) team names
+                home_side = sides.get(raw_home, {})
                 conn.execute(
                     """
                     INSERT INTO betting_lines (
@@ -185,7 +248,8 @@ def persist_lines_to_db(games_list, week, year, line_type):
 
     if unmatched:
         print(f"WARNING: {unmatched}/{len(games_list)} games had no matching CFBD game_id "
-              f"(team-name join failed) — betting_lines rows saved with game_id=NULL")
+              f"(team-name join failed even after school-name resolution) — betting_lines "
+              f"rows saved with game_id=NULL")
     return rows_added
 
 

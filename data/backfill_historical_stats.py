@@ -90,7 +90,11 @@ def backfill_season(conn, year, force=False):
     epa_stats = fetch_stats.fetch_epa_stats(year, None)
     records = fetch_stats.fetch_team_records(year)
 
-    teams = sorted(set(sp_ratings) | set(epa_stats) | set(records))
+    # sp_ratings/epa_stats are inherently FBS-only (~136 teams). records is NOT --
+    # it covers ~668 schools across every division. Union-ing in records here would
+    # add ~2 non-FBS rows (mostly-NULL sp_rating/epa) for every real FBS one; records
+    # is used below only as a wins/losses lookup, not to expand the team universe.
+    teams = sorted(set(sp_ratings) | set(epa_stats))
     if not teams:
         print(f"{year}: no data returned from CFBD, skipping")
         return 0

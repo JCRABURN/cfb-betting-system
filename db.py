@@ -15,7 +15,32 @@ import sqlite3
 from contextlib import contextmanager
 from datetime import datetime
 
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "cfb.db")
+_ROOT = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(_ROOT, "data", "cfb.db")
+
+
+def _load_dotenv(path=None):
+    """Minimal .env loader so local runs pick up CFBD_API_KEY/ODDS_API_KEY without
+    the caller having to export them manually. No-op if .env doesn't exist (e.g. in
+    GitHub Actions, where secrets are already env vars). Never overwrites a var
+    that's already set, so real env vars always win over .env.
+
+    Every ingestion script does `import db` before reading its own API key
+    constants from os.environ, so this runs early enough to matter.
+    """
+    path = path or os.path.join(_ROOT, ".env")
+    if not os.path.exists(path):
+        return
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            os.environ.setdefault(key.strip(), value.strip())
+
+
+_load_dotenv()
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS teams (
