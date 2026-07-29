@@ -64,7 +64,9 @@ CREATE TABLE IF NOT EXISTS betting_lines (
     FOREIGN KEY (game_id) REFERENCES games(game_id)
 );
 
--- Season-to-date snapshot (SP+, EPA, records), one row per team per capture.
+-- Season-to-date snapshot (SP+, EPA, success rate, havoc rate, records), one
+-- row per team per capture. week/game_id are NULL for season-level snapshots
+-- (e.g. the historical backfill), populated for in-season weekly captures.
 CREATE TABLE IF NOT EXISTS team_game_stats (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     game_id INTEGER,
@@ -74,6 +76,9 @@ CREATE TABLE IF NOT EXISTS team_game_stats (
     sp_rating REAL,
     offense_epa_play REAL,
     defense_epa_play REAL,
+    offense_success_rate REAL,
+    defense_success_rate REAL,
+    havoc_rate REAL,           -- CFBD only exposes havoc as a defensive stat
     wins INTEGER,
     losses INTEGER,
     source TEXT NOT NULL,
@@ -150,10 +155,31 @@ def get_connection():
     return conn
 
 
+# Columns added after the table already existed in committed DBs.
+# CREATE TABLE IF NOT EXISTS won't retroactively add these, so init_db()
+# patches them in via ALTER TABLE when missing.
+_ADDED_COLUMNS = {
+    "team_game_stats": [
+        ("offense_success_rate", "REAL"),
+        ("defense_success_rate", "REAL"),
+        ("havoc_rate", "REAL"),
+    ],
+}
+
+
+def _migrate_schema(conn):
+    for table, columns in _ADDED_COLUMNS.items():
+        existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        for name, col_type in columns:
+            if name not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {col_type}")
+
+
 def init_db():
     conn = get_connection()
     try:
         conn.executescript(SCHEMA)
+        _migrate_schema(conn)
         conn.commit()
     finally:
         conn.close()

@@ -119,8 +119,14 @@ def fetch_weather(game):
         return {}
 
 
-def persist_to_db(games, enriched_games):
-    """Write raw games/stats/weather into data/cfb.db so they survive past this CI run."""
+def persist_to_db(games, enriched_games, epa_stats=None):
+    """Write raw games/stats/weather into data/cfb.db so they survive past this CI run.
+
+    epa_stats is the raw per-team dict from fetch_epa_stats() (not the flattened
+    enriched dict), so success_rate/havoc_rate can be pulled straight from the CFBD
+    response shape without changing what generate_report.py/spread_model.py consume.
+    """
+    epa_stats = epa_stats or {}
     now = datetime.utcnow().isoformat()
     conn = db.get_connection()
     rows_added = 0
@@ -163,16 +169,22 @@ def persist_to_db(games, enriched_games):
                 ("away", enriched["away_team"], enriched["away_sp"],
                  enriched["away_offense_epa"], enriched["away_defense_epa"], enriched["away_record"]),
             ):
+                team_epa = epa_stats.get(team, {})
+                off_success = team_epa.get("offense", {}).get("successRate")
+                def_success = team_epa.get("defense", {}).get("successRate")
+                havoc = team_epa.get("defense", {}).get("havoc", {}).get("total")
                 conn.execute(
                     """
                     INSERT INTO team_game_stats (
                         game_id, season, week, team, sp_rating,
-                        offense_epa_play, defense_epa_play, wins, losses,
-                        source, fetched_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'cfbd', ?)
+                        offense_epa_play, defense_epa_play,
+                        offense_success_rate, defense_success_rate, havoc_rate,
+                        wins, losses, source, fetched_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'cfbd', ?)
                     """,
                     (
                         game_id, year, week, team, sp, off_epa, def_epa,
+                        off_success, def_success, havoc,
                         (record or {}).get("wins"), (record or {}).get("losses"), now,
                     ),
                 )
@@ -257,7 +269,7 @@ def main():
             json.dump({"week": week, "year": year, "games": enriched_games}, f, indent=2)
         print(f"Saved {len(enriched_games)} games to {out_path}")
 
-        run["rows_added"] = persist_to_db(games, enriched_games)
+        run["rows_added"] = persist_to_db(games, enriched_games, epa_stats)
         print(f"Persisted {run['rows_added']} rows to {db.DB_PATH}")
 
 

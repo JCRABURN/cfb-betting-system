@@ -1,10 +1,11 @@
 # CFB Betting System — Architecture Audit
 
-_Last updated: 2026-07-28 (Phase 0 audit + Phase 1 foundation)_
+_Last updated: 2026-07-28 (Phase 0 audit + Phase 1 foundation + Phase 2 historical stats)_
 
-> **Phase 1 status: done.** See §7 for what changed. Sections 1–6 below are the
-> original Phase 0 audit, kept as-is for the historical record of what things
-> looked like before the SQLite migration.
+> **Phase 1 status: done** (committed `a6463de`). **Phase 2 status: done, pending your
+> review.** See §7 for Phase 1 and §8 for Phase 2. Sections 1–6 below are the original
+> Phase 0 audit, kept as-is for the historical record of what things looked like before
+> the SQLite migration.
 
 ## 1. Repo map
 
@@ -158,3 +159,44 @@ Ran all 5 scripts via their real `main()` entry points back-to-back (offseason p
 Everything in this phase was verified against **synthetic fixtures**, not live APIs — there's no `CFBD_API_KEY` or `ODDS_API_KEY` available in this environment, so the season-with-real-games code paths (`persist_to_db`, `persist_lines_to_db`, `fetch_closing_lines`, `persist_results_to_db`) were exercised directly with hand-built fixture data standing in for CFBD/The Odds API responses, not an actual end-to-end run through `weekly_report.yml` / `results_updater.yml` against the real APIs. The offseason path (no games) *was* verified for real, since that's what actually runs today.
 
 **Before Week 0, run the real pipeline once against live CFBD + Odds API data** (either locally with real keys, or by watching the first live `workflow_dispatch` run in Actions) and check `data/cfb.db` row counts land as expected. Field-name assumptions from the CFBD/Odds API docs (e.g. exact JSON shape of `/stats/season/advanced`) are untested against the real response — a fixture can't catch a wrong key name.
+
+## 8. Phase 2 — historical SP+/EPA/success rate/havoc rate (2019+)
+
+### Does Phase 1's persistence layer give this somewhere to live?
+
+Yes, with one gap that's now closed. `team_game_stats` already had nullable `game_id`/`week` and a required `season` — exactly the shape a season-level snapshot needs (one row per team per season, no game attached). But it was missing success rate and havoc rate entirely. Added via an `ALTER TABLE` migration (`db._migrate_schema()`, runs automatically inside `init_db()` so the already-committed `data/cfb.db` picks up the new columns without a manual step):
+
+- `offense_success_rate`, `defense_success_rate`
+- `havoc_rate` — singular, not split offense/defense. CFBD's advanced-stats model only exposes havoc as a defensive stat (havoc *generated*), so an "offense_havoc_rate" column would be fabricating a metric that doesn't exist in the source data.
+
+Also backfilled `offense_success_rate`/`defense_success_rate`/`havoc_rate` into `fetch_stats.py`'s **weekly** in-season write path (`persist_to_db`), not just the historical script — the same CFBD `/stats/season/advanced` call it already makes contains these fields, so leaving them `NULL` for the current season while historical seasons have them would create an inconsistent dataset once modeling starts. This only touches what gets written to `data/cfb.db`; the JSON/report/model-facing `enriched_games` shape that `spread_model.py` and `generate_report.py` read is untouched.
+
+### What was built
+
+- **`data/backfill_historical_stats.py`** — loops seasons (default 2019 through last calendar year; the current season is left to the weekly `fetch_stats.py` run rather than double-ingested), fetching SP+, advanced stats, and records by reusing `fetch_stats.py`'s existing fetch functions (same directory, imported directly — no duplicated request logic). Also fetches `/teams` (FBS only) and upserts into the previously-empty `teams` table.
+- **Idempotent**: a season already present with `source='cfbd_historical_backfill'` is skipped with zero API calls unless `--force` is passed; a per-team existence check underneath also protects against a run that got interrupted partway through a season.
+- **Incremental**: `--start-year`/`--end-year` mean re-running next year with a wider range only fetches the new season — verified directly (see below).
+- Every run logs to `ingestion_runs` (`source='cfbd_historical_backfill'`).
+
+### Smoke tests — new `tests/` directory, `requirements.txt`, `Makefile`, `.env.example`
+
+None of these existed before (flagged as a gap in §5.1 of the original audit). Added:
+- `requirements.txt` (`requests`, `pytest`) and `.env.example` (`CFBD_API_KEY`, `ODDS_API_KEY`) — both explicitly called for by CLAUDE.md's engineering rules, neither previously present in any phase.
+- `Makefile` with a `test` target. **Note:** this machine has no `make` installed (verified — `make: command not found`), so `pytest -q` is what was actually run here; `make test` will work in CI (`ubuntu-latest` has `make`) or on a dev machine that has it, but wasn't exercised on this box.
+- `tests/` — 11 tests, all passing (`pytest -q` → `11 passed in 0.67s`):
+  - `test_db_schema.py`: schema creates all 8 tables, `team_game_stats` has the 3 new columns, `picks.pick_type` defaults to `'live'`, `log_run()` records both success and error/re-raise cases correctly.
+  - `test_backfill_historical_stats.py`: mocks `requests.get` with fixture CFBD payloads (2 fake teams) and verifies — row values land correctly including the new success/havoc columns; re-running the same season without `--force` doesn't duplicate rows; re-running **does** skip all API calls for an already-ingested season (asserted via call-count, not just row count); `--force` does re-fetch; `teams` upsert is update-not-duplicate under simulated conference realignment.
+
+### End-to-end verification (fixtures, not live API — same caveat as Phase 1)
+
+Ran the actual `backfill_historical_stats.py` CLI (`main()`, not just the internal functions the pytest suite covers) twice against 2 fixture seasons in an isolated copy:
+
+```
+First run  (--start-year 2019 --end-year 2020): 7 API calls, 4 rows added (2 teams × 2 seasons)
+Second run (same args, no --force):             1 API call (teams list only), 0 rows added
+                                                 both seasons correctly report "already ingested, skipping"
+```
+
+Final `data/cfb.db` in that test: `teams` = 2, `team_game_stats` = 4, `ingestion_runs` shows both runs logged (`rows_added` 4 and 0 respectively). This confirms idempotency and incrementality end-to-end, not just at the unit level.
+
+**Same outstanding item as Phase 1**: no live `CFBD_API_KEY` in this environment, so field-name assumptions for `/stats/season/advanced` (`successRate`, `havoc.total`) and `/teams` (`classification`, `division`) are best-guess based on the CFBD docs, unverified against a real response. Fold this into the same pre-Week-0 live-API verification pass already flagged in §7 — run `backfill_historical_stats.py --start-year 2019 --end-year 2025` for real and spot-check a few known teams' numbers before trusting the table.
