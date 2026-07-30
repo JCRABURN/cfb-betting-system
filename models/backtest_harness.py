@@ -39,6 +39,7 @@ live week-by-week prediction, so the two can't drift apart into different
 
 import sys
 import os
+import math
 from dataclasses import dataclass
 from typing import Optional
 
@@ -264,27 +265,83 @@ def calculate_clv(side, home_team, opening_spread, closing_spread):
 
 
 # ---------------------------------------------------------------------------
-# Simple linear regression (closed form) -- the one coefficient + intercept
-# the EPA baseline needs. No new dependency: this is a few lines of plain
-# Python, not worth adding numpy/sklearn for (per CLAUDE.md's engineering rule
-# to check stdlib/existing deps before adding a new one).
+# McNemar's test -- the instrument for "did adding this feature change picks
+# in a way that mattered," used for every one-at-a-time feature test
+# (MODEL_DESIGN.md "Later features" list), not just this one. On a game where
+# a challenger model disagrees with the baseline (picks the opposite side of
+# the SAME opening line), exactly one of them wins the bet, unless it's a
+# push -- so among non-push disagreement games, this reduces to: did the
+# challenger win more of the games it changed than it lost? That's a paired
+# comparison, not an aggregate one, and far more powerful than comparing two
+# overall win rates over thousands of games where most picks agree anyway.
 # ---------------------------------------------------------------------------
 
-def fit_linear(xs, ys):
-    """OLS slope + intercept for y ~ a*x + b. Raises if fewer than 2 points
-    or x has zero variance (can't fit a slope)."""
-    n = len(xs)
-    if n < 2:
-        raise ValueError(f"need at least 2 training points, got {n}")
-    mean_x = sum(xs) / n
-    mean_y = sum(ys) / n
-    var_x = sum((x - mean_x) ** 2 for x in xs)
-    if var_x == 0:
-        raise ValueError("zero variance in training feature -- cannot fit a slope")
-    cov_xy = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys))
-    slope = cov_xy / var_x
-    intercept = mean_y - slope * mean_x
-    return slope, intercept
+def mcnemar_test(challenger_right, baseline_right):
+    """challenger_right: count of disagreement games the challenger won (so
+    the baseline lost that same game). baseline_right: count of disagreement
+    games the baseline won (so the challenger lost). Concordant outcomes
+    don't enter McNemar's test at all -- only where the two models disagree
+    and therefore produced a different real-money outcome. Uses the standard
+    continuity-corrected chi-square(1 df) statistic; the p-value comes from
+    math.erf (stdlib) since chi-square(1) is the square of a standard normal
+    -- no scipy/numpy needed for a single degree of freedom.
+    Returns (chi2_statistic, p_value)."""
+    b, c = challenger_right, baseline_right
+    if b + c == 0:
+        return 0.0, 1.0
+    chi2 = (abs(b - c) - 1) ** 2 / (b + c)
+    z = math.sqrt(chi2)
+    p_value = 1 - math.erf(z / math.sqrt(2))
+    return chi2, p_value
+
+
+# ---------------------------------------------------------------------------
+# Multivariate linear regression (closed form, normal equations) -- generalizes
+# from the single-feature EPA baseline to N features (e.g. EPA + success rate)
+# without adding a feature-count ceiling to the harness. No new dependency:
+# pure Python Gaussian elimination is entirely adequate at the 2-4 feature
+# scale this project uses; a real linear algebra library would only earn its
+# place well beyond that (per CLAUDE.md's rule to check before adding one).
+# ---------------------------------------------------------------------------
+
+def _solve_linear_system(A, b):
+    """Gaussian elimination with partial pivoting. A: square matrix (list of
+    lists), b: vector, both length n. Returns the solution vector. Small
+    matrices only (as many rows/cols as fitted features + 1) -- this is not
+    meant to scale past a handful of features."""
+    n = len(b)
+    M = [row[:] + [b[i]] for i, row in enumerate(A)]
+    for col in range(n):
+        pivot_row = max(range(col, n), key=lambda r: abs(M[r][col]))
+        if abs(M[pivot_row][col]) < 1e-12:
+            raise ValueError("singular matrix -- cannot solve (check for a constant "
+                              "or perfectly collinear feature in training data)")
+        M[col], M[pivot_row] = M[pivot_row], M[col]
+        pivot = M[col][col]
+        M[col] = [v / pivot for v in M[col]]
+        for r in range(n):
+            if r != col:
+                factor = M[r][col]
+                M[r] = [M[r][c] - factor * M[col][c] for c in range(n + 1)]
+    return [M[i][n] for i in range(n)]
+
+
+def fit_multilinear(feature_rows, ys):
+    """OLS for y ~ b0 + b1*x1 + b2*x2 + ... via normal equations
+    (beta = (X^T X)^-1 X^T y). feature_rows: list of tuples, each the same
+    length k (no intercept column -- added automatically). Returns
+    (intercept, (coef1, coef2, ...)). Raises if fewer than k+1 training
+    points or the design matrix is singular (e.g. a constant feature)."""
+    n = len(ys)
+    k = len(feature_rows[0])
+    if n < k + 1:
+        raise ValueError(f"need at least {k + 1} training points for {k} feature(s), got {n}")
+    X = [[1.0] + list(row) for row in feature_rows]
+    p = k + 1
+    XtX = [[sum(X[i][a] * X[i][b] for i in range(n)) for b in range(p)] for a in range(p)]
+    Xty = [sum(X[i][a] * ys[i] for i in range(n)) for a in range(p)]
+    beta = _solve_linear_system(XtX, Xty)
+    return beta[0], tuple(beta[1:])
 
 
 # ---------------------------------------------------------------------------
@@ -313,28 +370,29 @@ def build_training_set(conn, feature_fn, seasons_before):
     predicted, each with ITS OWN as-of-that-game's-week feature value via
     feature_fn (built from get_pregame_stats -- the same accessor the
     predict step uses, so training and prediction can't drift onto
-    different, differently-leaky code paths). Returns (xs, ys) for
-    fit_linear. Deliberately does NOT require an opening line -- fitting the
-    slope/intercept only needs (feature, actual_margin) pairs, no betting
-    line at all, so a season with no opening-line coverage (2019/2020, see
-    get_opening_line) is still valid, full training data.
+    different, differently-leaky code paths). feature_fn(stats) must return
+    a TUPLE of one or more values (a single-feature model returns a 1-tuple,
+    e.g. `(epa_diff,)`) -- this is what lets fit_multilinear generalize from
+    one feature to several without a second code path. Returns (rows, ys) for
+    fit_multilinear. Deliberately does NOT require an opening line -- fitting
+    only needs (features, actual_margin) pairs, no betting line at all, so a
+    season with no opening-line coverage (2019/2020, see get_opening_line) is
+    still valid, full training data.
 
     seasons_before is a list of season ints, all strictly less than the
     season under test -- constructing it that way is what keeps this
     function from ever seeing the season it's about to help predict.
     """
-    xs, ys = [], []
+    rows, ys = [], []
     for season in seasons_before:
         for week in list_weeks(conn, season):
             for game_id, home_team, away_team, home_points, away_points in list_games(conn, season, week):
                 stats = get_pregame_stats(conn, home_team, away_team, season, week)
                 if stats is None:
                     continue
-                x = feature_fn(stats)
-                y = home_points - away_points
-                xs.append(x)
-                ys.append(y)
-    return xs, ys
+                rows.append(feature_fn(stats))
+                ys.append(home_points - away_points)
+    return rows, ys
 
 
 def available_seasons_before(conn, season):
@@ -349,24 +407,31 @@ def available_seasons_before(conn, season):
 
 def run_walk_forward(conn, seasons, feature_fn, predict_fn):
     """seasons: ordered list of season ints to test (e.g. [2020..2025]).
-    feature_fn(package) -> scalar x (e.g. EPA differential).
-    predict_fn(package, slope, intercept) -> predicted margin (home - away).
+    feature_fn(package) -> tuple of feature values (e.g. `(epa_diff,)` for a
+    single feature, `(epa_diff, success_rate_diff)` for two).
+    predict_fn(package, intercept, coefs) -> predicted margin (home - away),
+    where coefs is a tuple the same length as feature_fn's output.
 
-    For each season Y: fit slope/intercept on seasons < Y only, then predict
-    every lined FBS game week-by-week using week N-1 features. Returns a
-    flat list of PredictionRecord (including skipped games, reason noted).
+    For each season Y: fit intercept+coefs on seasons < Y only, then predict
+    every lined FBS game week-by-week using week N-1 features. Returns
+    (records, season_fits) -- a flat list of PredictionRecord (including
+    skipped games, reason noted) and a {season: (intercept, coefs)} dict, so
+    callers can check coefficient stability across seasons (a coefficient
+    that flips sign season to season is fitting noise, not a relationship).
     Every record gets a side + edge regardless of size -- bet/no-bet
     thresholding (MODEL_DESIGN.md §5) is a reporting-time concern applied
     afterward, not something the harness itself decides.
     """
     records = []
+    season_fits = {}
     for season in seasons:
         all_prior = available_seasons_before(conn, season)
-        xs, ys = build_training_set(conn, feature_fn, all_prior)
-        if len(xs) < 2:
+        rows, ys = build_training_set(conn, feature_fn, all_prior)
+        if len(rows) < 2:
             raise ValueError(f"not enough training data before season {season} "
-                              f"({len(xs)} games) -- cannot fit")
-        slope, intercept = fit_linear(xs, ys)
+                              f"({len(rows)} games) -- cannot fit")
+        intercept, coefs = fit_multilinear(rows, ys)
+        season_fits[season] = (intercept, coefs)
 
         for week in list_weeks(conn, season):
             for game_id, home_team, away_team, home_points, away_points in list_games(conn, season, week):
@@ -380,7 +445,7 @@ def run_walk_forward(conn, seasons, feature_fn, predict_fn):
                     ))
                     continue
 
-                predicted_margin = predict_fn(package, slope, intercept)
+                predicted_margin = predict_fn(package, intercept, coefs)
                 opening_spread = package["opening_spread"]
                 # market-implied home margin = -opening_spread (home_spread
                 # negative means home favored by that many points)
@@ -402,4 +467,4 @@ def run_walk_forward(conn, seasons, feature_fn, predict_fn):
                     opening_book=package["opening_book"],
                     result=result, clv=clv, unit_pl=pl,
                 ))
-    return records
+    return records, season_fits

@@ -170,6 +170,23 @@ CREATE TABLE IF NOT EXISTS ingestion_runs (
     status TEXT NOT NULL,      -- success | error
     error TEXT
 );
+
+-- Added 2026-07-30: the backtest harness's get_team_stats_as_of() runs this
+-- exact WHERE/ORDER BY on every single team-game prediction and every
+-- training-set row (tens of thousands of calls per walk-forward run,
+-- multiplied by every model tested against the baseline) with no index --
+-- a full table scan every time. A two-model feature-test run took several
+-- minutes as a result. CREATE INDEX IF NOT EXISTS is safe to run against an
+-- already-populated table (unlike ALTER TABLE ADD COLUMN, no separate
+-- migration dance needed).
+CREATE INDEX IF NOT EXISTS idx_team_game_stats_lookup
+    ON team_game_stats (source, team, season, week);
+
+CREATE INDEX IF NOT EXISTS idx_betting_lines_lookup
+    ON betting_lines (game_id, line_type, book);
+
+CREATE INDEX IF NOT EXISTS idx_games_season_week
+    ON games (season, week);
 """
 
 

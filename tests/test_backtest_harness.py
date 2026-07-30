@@ -258,11 +258,11 @@ def test_training_set_does_not_require_an_opening_line(temp_db):
     conn.commit()
 
     def feature_fn(package):
-        return package["home_stats"]["offense_epa_play"] - package["away_stats"]["offense_epa_play"]
+        return (package["home_stats"]["offense_epa_play"] - package["away_stats"]["offense_epa_play"],)
 
     xs, ys = bh.build_training_set(conn, feature_fn, [2019])
     conn.close()
-    assert xs == [pytest.approx(0.05)]
+    assert xs == [(pytest.approx(0.05),)]
     assert ys == [7]  # 24 - 17
 
 def test_available_seasons_before_excludes_target_season(temp_db):
@@ -296,37 +296,74 @@ def test_adversarial_training_set_never_includes_the_target_season(temp_db):
     conn.commit()
 
     def feature_fn(package):
-        return package["home_stats"]["offense_epa_play"] - package["away_stats"]["offense_epa_play"]
+        return (package["home_stats"]["offense_epa_play"] - package["away_stats"]["offense_epa_play"],)
 
     seasons_before_2023 = bh.available_seasons_before(conn, 2023)
     xs, ys = bh.build_training_set(conn, feature_fn, seasons_before_2023)
     conn.close()
 
-    assert 999.0 not in xs
+    assert (999.0,) not in xs
     assert len(xs) == 1  # only the legitimate 2022 game
-    assert xs[0] == pytest.approx(0.10 - 0.05)
+    assert xs[0] == (pytest.approx(0.10 - 0.05),)
 
 
 # ---------------------------------------------------------------------------
-# fit_linear -- closed-form OLS correctness
+# fit_multilinear -- closed-form OLS correctness (generalizes fit_linear to N features)
 # ---------------------------------------------------------------------------
 
-def test_fit_linear_recovers_known_slope_and_intercept():
-    xs = [0, 1, 2, 3, 4]
+def test_fit_multilinear_single_feature_recovers_known_slope_and_intercept():
+    rows = [(0,), (1,), (2,), (3,), (4,)]
     ys = [3, 5, 7, 9, 11]  # y = 2x + 3, no noise
-    slope, intercept = bh.fit_linear(xs, ys)
-    assert slope == pytest.approx(2.0)
+    intercept, coefs = bh.fit_multilinear(rows, ys)
+    assert coefs[0] == pytest.approx(2.0)
     assert intercept == pytest.approx(3.0)
 
 
-def test_fit_linear_raises_on_insufficient_points():
-    with pytest.raises(ValueError):
-        bh.fit_linear([1], [1])
+def test_fit_multilinear_two_features_recovers_known_coefficients():
+    # y = 3 + 2*x1 - 1*x2, no noise
+    rows = [(0, 0), (1, 0), (0, 1), (2, 1), (1, 2)]
+    ys = [3 + 2 * x1 - 1 * x2 for x1, x2 in rows]
+    intercept, coefs = bh.fit_multilinear(rows, ys)
+    assert intercept == pytest.approx(3.0)
+    assert coefs[0] == pytest.approx(2.0)
+    assert coefs[1] == pytest.approx(-1.0)
 
 
-def test_fit_linear_raises_on_zero_variance():
+def test_fit_multilinear_raises_on_insufficient_points():
     with pytest.raises(ValueError):
-        bh.fit_linear([5, 5, 5], [1, 2, 3])
+        bh.fit_multilinear([(1,)], [1])
+
+
+def test_fit_multilinear_raises_on_zero_variance():
+    with pytest.raises(ValueError):
+        bh.fit_multilinear([(5,), (5,), (5,)], [1, 2, 3])
+
+
+def test_fit_multilinear_raises_on_collinear_features():
+    # x2 is always exactly 2*x1 -- perfectly collinear, singular design matrix
+    with pytest.raises(ValueError):
+        bh.fit_multilinear([(0, 0), (1, 2), (2, 4)], [1, 2, 3])
+
+
+# ---------------------------------------------------------------------------
+# mcnemar_test -- the paired-comparison instrument for feature evaluation
+# ---------------------------------------------------------------------------
+
+def test_mcnemar_significant_when_challenger_wins_lopsidedly():
+    # challenger wins 40 of the 50 disagreement games baseline would have lost
+    chi2, p = bh.mcnemar_test(challenger_right=40, baseline_right=10)
+    assert p < 0.05
+
+
+def test_mcnemar_not_significant_when_close_to_even():
+    chi2, p = bh.mcnemar_test(challenger_right=26, baseline_right=24)
+    assert p > 0.05
+
+
+def test_mcnemar_no_disagreements_is_not_significant():
+    chi2, p = bh.mcnemar_test(challenger_right=0, baseline_right=0)
+    assert chi2 == 0.0
+    assert p == 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -404,13 +441,13 @@ def test_walk_forward_end_to_end_refuses_a_planted_same_week_leak(temp_db):
     conn.commit()
 
     def feature_fn(package):
-        return package["home_stats"]["offense_epa_play"] - package["away_stats"]["offense_epa_play"]
+        return (package["home_stats"]["offense_epa_play"] - package["away_stats"]["offense_epa_play"],)
 
-    def predict_fn(package, slope, intercept):
-        x = feature_fn(package)
-        return slope * x + intercept
+    def predict_fn(package, intercept, coefs):
+        (x,) = feature_fn(package)
+        return coefs[0] * x + intercept
 
-    records = bh.run_walk_forward(conn, [2023], feature_fn, predict_fn)
+    records, season_fits = bh.run_walk_forward(conn, [2023], feature_fn, predict_fn)
     conn.close()
 
     test_game = next(r for r in records if r.game_id == 2)

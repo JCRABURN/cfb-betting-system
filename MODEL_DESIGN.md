@@ -404,6 +404,10 @@ Added one at a time, each measured against the baseline:
   *situational* splits with a plausible mechanism, not overall records.)
 - Rest / schedule spots (bye weeks, short weeks, 3rd straight road game).
 - Rivalry / letdown / look-ahead motivational spots.
-- Success rate + havoc (once weekly-backfilled per §3).
+- ~~Success rate + havoc (once weekly-backfilled per §3).~~ Success rate
+  **tested 2026-07-30, REJECTED** — see the feature-test log in
+  ARCHITECTURE.md §15. Failed 2 of 3 pre-registered criteria (McNemar
+  p=0.82 on 301 disagreement games; improved in only 2/5 seasons); only
+  coefficient-sign stability passed. Havoc still pending, untested.
 - Book-name normalization (DraftKings/Draft Kings, 3× Caesars labels) — needed
   before any "track one book's line over time" analysis.

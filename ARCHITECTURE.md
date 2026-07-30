@@ -446,4 +446,62 @@ Bet-subset (edge >= 3.0 pts, a placeholder threshold, not yet calibrated): 2427
 
 `models/backtest_harness.py` (the harness), `models/baseline_epa.py` (the one-feature model), `models/run_backtest.py` (CLI runner + season/subset reporting), `tests/test_backtest_harness.py` (30 tests), `tests/test_baseline_epa.py` (4 tests).
 
+Committed as `3a39812`.
+
+## 15. First one-at-a-time feature test: success rate — REJECTED (2026-07-30)
+
+Per MODEL_DESIGN.md's "features, one at a time, each measured against the baseline" plan (§2 step 4), tested point-in-time success rate (already sitting in `team_game_stats` from the Phase 1 point-in-time backfill, unused until now) as a second feature alongside EPA. Methodology confirmed with the owner *before* writing any code:
+
+1. **McNemar's test on disagreement games** (games where the two models pick opposite sides of the same opening line) — significant at p<0.05, required.
+2. **Directional improvement in ≥4 of 5 graded seasons** (2021-2025) — a feature that helps in one lucky season is noise, not signal (same lesson as the edge≥3 threshold finding from the baseline run).
+3. **Coefficient sign stability** across every season's walk-forward fit.
+
+All three required, decided before results were seen, so a partial pass couldn't be used to argue the bar down after the fact.
+
+### Harness generalized from one feature to N, verified as a no-op first
+
+Extended `backtest_harness.py` from single-variable OLS (`fit_linear`) to a general `fit_multilinear` (closed-form normal equations, pure Python — a 2-4 feature regression doesn't need numpy). `feature_fn` now returns a tuple (a 1-tuple for the existing EPA-only baseline) rather than a bare scalar, and `run_walk_forward` now also returns `season_fits` (`{season: (intercept, coefs)}`) so coefficient stability can be checked directly. Also added `mcnemar_test(challenger_right, baseline_right)` as a general, reusable utility (stdlib `math.erf` for the chi-square(1 df) p-value — no scipy needed for a single degree of freedom), since every future feature test needs it, not just this one.
+
+**Before trusting any comparison against the 51.1% floor, re-ran the EPA baseline through the refactored (now-multivariate) harness and confirmed it reproduces the exact committed numbers** (51.1% ATS / -2.5% ROI all-predictions, 51.3%/-2.0% bet-subset, identical to the last commit, digit for digit) — the refactor is a verified no-op for the single-feature case, not just an assumed one. Also factored `run_backtest.py`'s reporting (`aggregate`/`fmt_row`/season-table printing) into a new shared `models/backtest_report.py`, since every future feature test needs the same tables.
+
+### The test
+
+`models/feature_success_rate.py`: EPA differential (unchanged) + success-rate differential (`offense_success_rate - defense_success_rate`, home minus away — same subtraction convention as EPA, since `defense_success_rate` is the success rate *opposing offenses* achieve against that defense, confirmed directionally sane against Georgia's known-elite 2023 defense sitting well below the ~42-45% national average). `models/run_feature_test.py` (generic, reusable for every future feature) runs baseline and challenger through the identical harness, confirms both graded the *exact same* 3,479 games (a sanity check that would have caught any NULL-coverage mismatch between EPA and success rate before trusting anything downstream), then applies the three criteria.
+
+### Result: FAIL on 2 of 3 — do not keep
+
+```
+McNemar 2x2 table (301 disagreement games, decided both ways):
+  Challenger right (baseline wrong): 153
+  Baseline right (challenger wrong): 148
+  chi2 = 0.053, p = 0.8177                              -> FAIL (need p<0.05)
+
+Per-season ATS, baseline -> challenger:
+  2021: 48.7% -> 49.6%  (+0.9pp)  improved
+  2022: 53.0% -> 51.2%  (-1.8pp)  regressed
+  2023: 50.7% -> 50.2%  (-0.4pp)  regressed
+  2024: 52.1% -> 54.1%  (+2.0pp)  improved
+  2025: 50.9% -> 50.9%  ( 0.0pp)  no change
+  Improved in 2/5 seasons                               -> FAIL (need >=4/5)
+
+Coefficient sign (success-rate term), all 6 season fits: always positive
+  (29.0 to 35.9 range)                                  -> PASS
+```
+
+**153 vs. 148 on the disagreement games is as close to a coin flip as this sample size gets** — the McNemar p-value of 0.82 says so plainly. Combined ATS moved from 51.1% to 51.2% (essentially unchanged), and that flat aggregate was hiding two seasons up, two down, one flat — exactly what the season-by-season criterion exists to catch, since the aggregate alone would have looked like a shrug rather than a clear miss.
+
+**Plausible reason, not proven, flagged as a hypothesis:** success rate and EPA are both derived from largely the same underlying play-by-play efficiency data and are likely highly correlated at the team level. Added on top of a model that already has EPA, its independent marginal information may simply be small — consistent with (though not proof of) what both criterion 1 and criterion 2 show.
+
+**Verdict: DO NOT KEEP, per the pre-registered bar.** Not rescued by relaxing the threshold or cherry-picking the two improved seasons — the bar was set before results were seen and stays set. Havoc is next, tested independently against the same EPA-only baseline (not stacked on top of the rejected success-rate feature).
+
+### A real performance bug found and fixed along the way
+
+The first run took much longer than expected (single-model baseline runs had taken roughly a minute; this two-model run took over 8 minutes, not the ~2x estimate). Confirmed via CPU-time sampling (growing slowly — 32s to 44s CPU time across several minutes of wall clock) that it was making genuine but very slow progress, not hung. Root cause: `team_game_stats` had no index on `(source, team, season, week)`, so every single `get_team_stats_as_of()` call — tens of thousands of them across a full walk-forward run, and this is called for every training row and every prediction, for every model tested — was a full table scan.
+
+Added `idx_team_game_stats_lookup` (on `source, team, season, week`), plus `idx_betting_lines_lookup` and `idx_games_season_week` for the same reason (both queried in the same hot loop). `CREATE INDEX IF NOT EXISTS` applies cleanly to the already-populated committed database, no migration dance needed. Re-ran the exact same feature test after adding the indexes: **2.4 seconds, down from 8+ minutes — a ~200x speedup** — and confirmed the results are byte-for-byte identical to the pre-index run (see the McNemar table above), so this was purely a performance fix, not a behavior change. This matters beyond just today's run: havoc and every feature tested after it hits the same hot path, so this was worth fixing now rather than paying it on every future comparison.
+
+### New files
+
+`models/backtest_report.py` (shared reporting, extracted from `run_backtest.py`), `models/feature_success_rate.py`, `models/run_feature_test.py` (generic, reusable), `models/run_feature_test_success_rate.py` (entry point), `tests/test_feature_success_rate.py` (4 tests), plus updates to `backtest_harness.py`/`baseline_epa.py`/their tests for the multivariate generalization, and three new indexes in `db.py`. 85 tests pass across the whole suite.
+
 Not yet committed — pending review.
