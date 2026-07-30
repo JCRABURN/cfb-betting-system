@@ -54,24 +54,40 @@ def run_feature_test(challenger_feature_fn, challenger_predict_fn, num_new_featu
     baseline_by_id = {r.game_id: r for r in baseline_records}
     challenger_by_id = {r.game_id: r for r in challenger_records}
 
-    # Sanity check before anything else: both models must see the identical
-    # graded/skipped game set, since the same point-in-time accessor decides
-    # availability for both. A mismatch would mean the new feature has
-    # different NULL coverage than EPA -- worth investigating, not silently
-    # comparing two different game populations.
+    # Sanity check before anything else: both models must see (essentially)
+    # the identical graded/skipped game set, since the same point-in-time
+    # accessor decides availability for both. A mismatch means the new
+    # feature has different NULL coverage than EPA for at least some games
+    # (e.g. havoc_rate: 17 of 13,290 point-in-time rows are NULL even when
+    # EPA is present, confirmed live). A SMALL such mismatch is expected and
+    # handled by comparing on the intersection, reported explicitly rather
+    # than silently dropped; a LARGE one would suggest a real bug and still
+    # stops the comparison outright.
     baseline_graded_ids = {r.game_id for r in baseline_records if r.skipped_reason is None}
     challenger_graded_ids = {r.game_id for r in challenger_records if r.skipped_reason is None}
-    if baseline_graded_ids != challenger_graded_ids:
-        raise AssertionError(
-            f"Baseline and challenger graded DIFFERENT game sets -- comparison invalid. "
-            f"{len(baseline_graded_ids - challenger_graded_ids)} graded only by baseline, "
-            f"{len(challenger_graded_ids - baseline_graded_ids)} only by challenger. "
-            f"Investigate the new feature's NULL coverage before trusting anything below."
-        )
-    print(f"Both models graded the identical {len(baseline_graded_ids)} games -- comparison is apples-to-apples.\n")
+    only_baseline = baseline_graded_ids - challenger_graded_ids
+    only_challenger = challenger_graded_ids - baseline_graded_ids
+    mismatch = only_baseline | only_challenger
+    if mismatch:
+        pct = len(mismatch) / len(baseline_graded_ids | challenger_graded_ids) * 100
+        if pct > 1.0:
+            raise AssertionError(
+                f"Baseline and challenger graded substantially different game sets -- comparison "
+                f"invalid. {len(only_baseline)} graded only by baseline, {len(only_challenger)} only "
+                f"by challenger ({pct:.2f}% of games). Investigate the new feature's NULL coverage "
+                f"before trusting anything below."
+            )
+        print(f"NOTE: {len(mismatch)} game(s) ({pct:.2f}%) graded by only one model -- "
+              f"{len(only_baseline)} only by baseline, {len(only_challenger)} only by challenger. "
+              f"Small enough to proceed on the intersection (comparing both models on exactly the "
+              f"same games), but flagged rather than silently dropped.\n")
+        common_ids = baseline_graded_ids & challenger_graded_ids
+    else:
+        common_ids = baseline_graded_ids
+    print(f"Comparing on {len(common_ids)} games both models graded.\n")
 
-    baseline_graded = [r for r in baseline_records if r.skipped_reason is None]
-    challenger_graded = [r for r in challenger_records if r.skipped_reason is None]
+    baseline_graded = [r for r in baseline_records if r.game_id in common_ids]
+    challenger_graded = [r for r in challenger_records if r.game_id in common_ids]
 
     print("=== BASELINE (EPA only) ===")
     report.print_season_table("ALL PREDICTIONS", baseline_graded, GRADED_SEASONS)
@@ -102,7 +118,7 @@ def run_feature_test(challenger_feature_fn, challenger_predict_fn, num_new_featu
     print("=" * 90)
     disagreements = [
         (baseline_by_id[gid], challenger_by_id[gid])
-        for gid in baseline_graded_ids
+        for gid in common_ids
         if baseline_by_id[gid].side != challenger_by_id[gid].side
         and baseline_by_id[gid].result in ("win", "loss")
         and challenger_by_id[gid].result in ("win", "loss")

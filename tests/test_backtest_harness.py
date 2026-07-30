@@ -265,6 +265,71 @@ def test_training_set_does_not_require_an_opening_line(temp_db):
     assert xs == [(pytest.approx(0.05),)]
     assert ys == [7]  # 24 - 17
 
+
+def test_training_set_skips_rows_where_feature_fn_returns_none(temp_db):
+    """The real gap havoc_rate hit: a feature_fn may be unable to compute a
+    value for some rows (e.g. a field that's occasionally NULL even when the
+    rest of pregame stats exist). feature_fn signals this by returning None;
+    that row must be silently excluded from training, not crash or get
+    treated as a zero."""
+    conn = temp_db.get_connection()
+    insert_game(conn, 1, 2019, 3, "H", "A", 24, 17)
+    insert_stats(conn, 2019, 1, "H", 0.10)
+    insert_stats(conn, 2019, 1, "A", 0.05)
+    insert_game(conn, 2, 2019, 3, "H2", "A2", 20, 10)
+    insert_stats(conn, 2019, 1, "H2", 0.20)
+    insert_stats(conn, 2019, 1, "A2", 0.05)
+    conn.commit()
+
+    def feature_fn(package):
+        # simulate a feature that can't be computed for the second game
+        if package["home_stats"]["offense_epa_play"] == 0.20:
+            return None
+        return (package["home_stats"]["offense_epa_play"] - package["away_stats"]["offense_epa_play"],)
+
+    rows, ys = bh.build_training_set(conn, feature_fn, [2019])
+    conn.close()
+    assert len(rows) == 1  # only the first game -- the second was excluded, not crashed on
+    assert ys == [7]
+
+
+def test_run_walk_forward_skips_predictions_where_predict_fn_returns_none(temp_db):
+    """Same None-signal, at the prediction step: predict_fn returning None
+    must produce a skipped record (reason='missing_feature_data'), not a
+    crash or a silently wrong prediction."""
+    conn = temp_db.get_connection()
+    insert_game(conn, 1, 2022, 3, "H", "A", 24, 17)
+    insert_stats(conn, 2022, 1, "H", 0.10)
+    insert_stats(conn, 2022, 1, "A", 0.05)
+    insert_line(conn, 1, 2022, 3, -3.0, "opening")
+    insert_game(conn, 2, 2022, 6, "H2", "A2", 30, 10)
+    insert_stats(conn, 2022, 4, "H2", 0.20)
+    insert_stats(conn, 2022, 4, "A2", 0.05)
+    insert_line(conn, 2, 2022, 6, -6.0, "opening")
+
+    insert_game(conn, 3, 2023, 5, "H", "A", 24, 20)
+    insert_stats(conn, 2023, 3, "H", 0.10)
+    insert_stats(conn, 2023, 3, "A", 0.05)  # will be treated as "unavailable" below
+    insert_line(conn, 3, 2023, 5, -3.0, "opening")
+    conn.commit()
+
+    def feature_fn(package):
+        return (package["home_stats"]["offense_epa_play"] - package["away_stats"]["offense_epa_play"],)
+
+    def predict_fn(package, intercept, coefs):
+        if package["home_stats"]["as_of_week"] == 3 and package["away_stats"]["as_of_week"] == 3:
+            return None  # simulate the feature being unavailable for this specific game
+        (x,) = feature_fn(package)
+        return coefs[0] * x + intercept
+
+    records, _ = bh.run_walk_forward(conn, [2023], feature_fn, predict_fn)
+    conn.close()
+
+    test_game = next(r for r in records if r.game_id == 3)
+    assert test_game.skipped_reason == "missing_feature_data"
+    assert test_game.side is None
+
+
 def test_available_seasons_before_excludes_target_season(temp_db):
     conn = temp_db.get_connection()
     insert_game(conn, 1, 2021, 1, "H", "A", 20, 10)

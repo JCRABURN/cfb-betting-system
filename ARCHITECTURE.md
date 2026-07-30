@@ -504,4 +504,46 @@ Added `idx_team_game_stats_lookup` (on `source, team, season, week`), plus `idx_
 
 `models/backtest_report.py` (shared reporting, extracted from `run_backtest.py`), `models/feature_success_rate.py`, `models/run_feature_test.py` (generic, reusable), `models/run_feature_test_success_rate.py` (entry point), `tests/test_feature_success_rate.py` (4 tests), plus updates to `backtest_harness.py`/`baseline_epa.py`/their tests for the multivariate generalization, and three new indexes in `db.py`. 85 tests pass across the whole suite.
 
+Committed as `59e3bbb`.
+
+## 16. Second one-at-a-time feature test: havoc rate — REJECTED (2026-07-30)
+
+Same three pre-registered criteria as §15, same bar, tested independently against the EPA-only baseline (not stacked on the rejected success-rate feature). Before running: the owner noted havoc measures defensive disruption specifically (TFLs, forced fumbles, PBUs) rather than EPA's general efficiency — a more plausible a-priori mechanism for independent signal than success rate had, explicitly not a prediction and not a change to the bar.
+
+### A real gap the previous feature test never hit
+
+`havoc_rate` is the only stat CFBD exposes as a single (defense-only) value per team, with no offense/defense split the way EPA and success rate have. Building `feature_havoc.py`'s `home_havoc_rate - away_havoc_rate` crashed on the first run: `TypeError: unsupported operand type(s) for -: 'float' and 'NoneType'`. Checked the scope before deciding on a fix: **17 of 13,290 point-in-time rows (0.13%) have `havoc_rate IS NULL` while `offense_epa_play` is populated** — mostly 2020 (13 rows, presumably too few defensive snaps recorded yet in the COVID-disrupted early schedule), 2 each in 2023/2024. Success rate never hit this because its own NULL count (checked at the time) was exactly zero — pure luck of which field was tested first, not evidence the gap didn't exist.
+
+**Fix, not a workaround:** extended the harness's contract rather than special-casing havoc. `feature_fn`/`predict_fn` may now return `None` to signal "cannot compute for this game" (in addition to always being allowed to return a tuple/margin) — `build_training_set` silently excludes such training rows (same treatment as a game with no pregame stats at all), and `run_walk_forward`'s prediction loop records a skip with `skipped_reason='missing_feature_data'` rather than crashing or substituting a default. Added tests for both paths in `test_backtest_harness.py`, plus `feature_havoc.py`'s own None-returning behavior in `test_feature_havoc.py`.
+
+This in turn surfaced a real gap in `run_feature_test.py`'s own sanity check: it originally *required* baseline and challenger to grade the byte-identical game set, which is correct in spirit but too strict in practice — havoc's 3 affected games (out of 3,479) tripped a hard `AssertionError` even though the discrepancy is small, understood, and doesn't threaten the comparison's validity. Changed the check to compute the game-ID intersection, print an explicit note when it's non-empty (count and which side), and proceed comparing both models on the intersection — but still raise if the mismatch exceeds 1% of games, preserving the original protection against a genuine bug silently comparing two different populations. Re-verified the success-rate test still reports the exact same numbers as before this change (0 mismatch there, so the intersection equals the full 3,479-game set) before trusting the havoc run.
+
+### Result
+
+```
+McNemar 2x2 table (119 disagreement games, decided both ways):
+  Challenger right (baseline wrong): 60
+  Baseline right (challenger wrong): 59
+  chi2 = 0.000, p = 1.0000                              -> FAIL (need p<0.05)
+
+Per-season ATS, baseline -> challenger (3,476 games, 3 excluded per above):
+  2021: 48.7% -> 49.1%  (+0.4pp)  improved
+  2022: 53.0% -> 52.7%  (-0.3pp)  regressed
+  2023: 50.7% -> 50.8%  (+0.1pp)  improved
+  2024: 52.0% -> 52.0%  ( 0.0pp)  no change
+  2025: 50.9% -> 50.8%  (-0.1pp)  regressed
+  Improved in 2/5 seasons                               -> FAIL (need >=4/5)
+
+Coefficient sign (havoc term), all 6 season fits: always positive
+  (16.7 to 24.9 range)                                  -> PASS
+```
+
+**60 vs. 59 is as close to an exact coin flip as a paired test gets** — even more decisive a non-result than success rate's 153-vs-148 (p=0.82). Combined ATS barely moved (51.1% either way, rounding), and again the flat aggregate masked a real split: two seasons up marginally, two down marginally, one flat.
+
+**Verdict: DO NOT KEEP, per the same pre-registered bar.** The owner's a-priori case — havoc measuring a mechanism distinct from EPA's general efficiency — did not pan out. Noted explicitly at the time as "no prediction either way, the data will decide," and it decided against it. Two independent candidate features derived from the same CFBD advanced-stats call have now both failed to clear the bar; EPA alone remains the only feature that has survived testing.
+
+### New files
+
+`models/feature_havoc.py`, `models/run_feature_test_havoc.py` (entry point), `tests/test_feature_havoc.py` (7 tests), plus the `None`-contract extension to `backtest_harness.py` (2 new tests) and the intersection-based sanity check in `run_feature_test.py`. 94 tests pass across the whole suite.
+
 Not yet committed — pending review.

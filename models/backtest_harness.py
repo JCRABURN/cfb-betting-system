@@ -373,11 +373,16 @@ def build_training_set(conn, feature_fn, seasons_before):
     different, differently-leaky code paths). feature_fn(stats) must return
     a TUPLE of one or more values (a single-feature model returns a 1-tuple,
     e.g. `(epa_diff,)`) -- this is what lets fit_multilinear generalize from
-    one feature to several without a second code path. Returns (rows, ys) for
-    fit_multilinear. Deliberately does NOT require an opening line -- fitting
-    only needs (features, actual_margin) pairs, no betting line at all, so a
-    season with no opening-line coverage (2019/2020, see get_opening_line) is
-    still valid, full training data.
+    one feature to several without a second code path. feature_fn MAY return
+    None instead, to signal "cannot compute for this game" (e.g. a field like
+    havoc_rate that's occasionally NULL even when EPA is present -- confirmed
+    live: 17 of 13,290 point-in-time rows, mostly 2020, presumably too few
+    defensive snaps recorded yet) -- such rows are silently excluded from
+    training, the same as a game with no pregame stats at all. Returns
+    (rows, ys) for fit_multilinear. Deliberately does NOT require an opening
+    line -- fitting only needs (features, actual_margin) pairs, no betting
+    line at all, so a season with no opening-line coverage (2019/2020, see
+    get_opening_line) is still valid, full training data.
 
     seasons_before is a list of season ints, all strictly less than the
     season under test -- constructing it that way is what keeps this
@@ -390,7 +395,10 @@ def build_training_set(conn, feature_fn, seasons_before):
                 stats = get_pregame_stats(conn, home_team, away_team, season, week)
                 if stats is None:
                     continue
-                rows.append(feature_fn(stats))
+                feature_row = feature_fn(stats)
+                if feature_row is None:
+                    continue
+                rows.append(feature_row)
                 ys.append(home_points - away_points)
     return rows, ys
 
@@ -446,6 +454,18 @@ def run_walk_forward(conn, seasons, feature_fn, predict_fn):
                     continue
 
                 predicted_margin = predict_fn(package, intercept, coefs)
+                if predicted_margin is None:
+                    # predict_fn signals "can't compute a feature for this
+                    # game" the same way feature_fn does for training rows
+                    # (see build_training_set) -- e.g. a NULL havoc_rate.
+                    records.append(PredictionRecord(
+                        game_id=game_id, season=season, week=week,
+                        home_team=home_team, away_team=away_team,
+                        side=None, edge=None, opening_spread=None,
+                        skipped_reason="missing_feature_data",
+                    ))
+                    continue
+
                 opening_spread = package["opening_spread"]
                 # market-implied home margin = -opening_spread (home_spread
                 # negative means home favored by that many points)
