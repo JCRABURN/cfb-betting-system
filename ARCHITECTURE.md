@@ -386,3 +386,64 @@ Georgia 2023, weeks 3/6/9/12 — proof the numbers genuinely move, not frozen li
 §1 and §3 revised to state the actual finding (SP+ blocked, not deferred) rather than the original plan (SP++EPA now, success rate/havoc later). Added an explicit honesty caveat: **the 2019-2025 backtest has no SP+ feature at all; live predictions eventually will, once enough live-forward SP+ history accumulates.** These are not the same feature set and must never be silently compared as if they were — any future "does adding SP+ help" comparison needs its own controlled test. §2 and §6's baseline-definition references to "SP+/EPA only" were also flagged as outdated given SP+'s absence.
 
 Also fixed while opening `MODEL_DESIGN.md`: the committed file had every line wrapped in a spurious leading `# ` (turning every paragraph into an H1 heading) plus backslash-escaped markdown (`\*\*`, `\#`, `\---`) and literal `&#x20;` space entities — an artifact from whatever export process produced it, not intentional formatting. Cleaned mechanically (stripped the artifact prefix, unescaped the backslash sequences, replaced the entities, collapsed doubled blank lines) and diffed the result against a manual read of the original to confirm no content changed, only its renderability.
+
+## 14. Walk-forward backtest harness + EPA baseline (2026-07-30)
+
+MODEL_DESIGN.md §4/§6, built in the order specified: the measuring instrument first, then the dumbest possible model run through it. Before writing either, confirmed the enforcement mechanism back to the owner (not just "the loop is in order" — three structural guarantees, agreed before any code):
+
+1. **Sealed feature package, no DB handle for prediction code.** The harness builds `{home_stats, away_stats, opening_spread, opening_total}` before calling the prediction function; the function never sees a connection, a season, or a week. Whatever isn't in the package can't be used — this is what makes season-wide-aggregate leaks structurally impossible, not just discouraged.
+2. **One accessor per concern.** `get_team_stats_as_of(team, season, week)` returns the most recent `cfbd_point_in_time` row strictly before `week`, or `None` — the only sanctioned read path into `team_game_stats` for features. `get_opening_line`/`get_closing_line` are separate functions so opening (model input) and closing (CLV only) can never be swapped by accident.
+3. **Point-in-time discipline applies to training data too.** The v1 "retrain once per season" rule fits one slope+intercept per season Y using only games from seasons < Y — and each of *those* training games gets its own as-of-that-game's-week feature via the same accessor, not that game's season-final numbers. One code path serves both training and live prediction, so they can't drift into different (and differently leaky) implementations.
+
+### Adversarial tests, run before the baseline (per instruction)
+
+`tests/test_backtest_harness.py` — 30 tests, each trying to break a guarantee rather than just confirming the happy path:
+- Plants a wildly-wrong stats row *at* the target week and confirms the accessor refuses it (only returns week N-1 or earlier).
+- Confirms a season-final (`cfbd_historical_backfill`) row never satisfies the point-in-time accessor even as the only row present.
+- Plants a "leak" game in the season about to be predicted with an absurd feature value, builds the training set for that season, and asserts the leak value never appears among the training data (`999.0 not in xs`).
+- An end-to-end version of the same leak, run through the full `run_walk_forward` loop, not just the unit-level accessor.
+- Confirms `get_opening_line` never falls back to a closing line when no opener exists (returns `None`, caller must skip).
+- `fit_linear`, `grade_ats`, `unit_pl`, `calculate_clv` checked against known values and edge cases (push, insufficient training points, zero-variance feature).
+
+All 30 passed before the baseline was run, per instruction, plus 4 more for `baseline_epa.py`'s feature logic (sign-correctness of the EPA differential, confirmed a worse defense lowers net team strength rather than raising it). 75 tests total across the whole suite.
+
+### Two real bugs the adversarial tests didn't catch — real data did
+
+Both were caught only once the harness ran against the actual archive, not the synthetic test fixtures — the same lesson as every other phase this session: a test can only be as honest as its assumptions.
+
+1. **Training-set construction incorrectly required an opening line.** `build_feature_package` (designed for the predict step, which does need a line) was reused for training-set construction too, which only needs `(feature, actual_margin)` pairs — no line data at all. This made 2019 (0 opening lines in the archive at all — see next bug) show 0 training games, crashing `fit_linear`. Fixed by splitting out `get_pregame_stats()` (stats only) for training, keeping `build_feature_package()` (stats + line) for prediction. Added `test_training_set_does_not_require_an_opening_line`.
+
+2. **CFBD's historical archive has no consensus opening line, ever, and consensus closing collapses after 2022.** Confirmed live: `SELECT COUNT(*) WHERE line_type='opening' AND book='consensus'` → 0 rows, every season. Individual books do have openers, but only from 2021 on (Bovada first, DraftKings/ESPN Bet added in later years); 2019/2020 have zero opening lines from any book at all. Separately, consensus *closing* coverage collapses too: 2019-2022 fine (700+ rows/season), 2023 drops to 29, 2024/2025 are 0 — while Bovada's closing coverage stays complete throughout. Fixed both accessors to prefer consensus, then fall back to a single book, flagged via a `book` field on the returned line (never silently relabeling a book's number as "consensus") — exactly the "fall back and FLAG it, never silently substitute" instruction already written into MODEL_DESIGN.md §4 before this was found. `get_closing_line` additionally takes the *same* book the opening came from, so CLV compares like-for-like rather than mixing books. 6 new tests cover both fallback chains and the "nothing at all exists" case.
+
+### Full backtest run — usable history is 2021-2025, not 2020-2025
+
+```
+Total games considered: 4217
+Graded (had both pregame stats and an opening line): 3479
+Skipped: 738 (316 missing_pregame_stats, 422 missing_opening_line)
+Bet-subset (edge >= 3.0 pts, a placeholder threshold, not yet calibrated): 2427
+```
+
+**Known fact, not a bug: 2020 contributes zero gradeable games.** Not partially degraded — literally 0 of 489 games could be predicted, because 2020 has no opening-line data in the archive at all (415 skipped for that reason, the remaining 74 for missing pregame stats, itself partly a COVID-schedule artifact of teams not having played yet). This is a distinct, more specific finding than "2020 is COVID-shortened" — it's a flat data-coverage hole, confirmed via direct query, separate from the schedule oddities COVID caused. **The usable backtest window is 2021-2025 (five seasons), not 2020-2025** — corrected here after initially reporting the wider range.
+
+**Known fact, not a bug: opening-line coverage is thin and single-book-patched, so CLV should be read as noisier/less complete than the win-rate numbers.** CFBD's archive has no true consensus opener at all (0 rows, every season, confirmed live) and consensus closers collapse after 2022 (29 rows in 2023, 0 in 2024/2025). Every CLV figure below rests on a single-book proxy (`get_opening_line`/`get_closing_line`'s fallback), which is real, useful signal but a thinner foundation than the win-rate/ROI numbers, which don't depend on line data beyond the one opening spread used to grade ATS. Treat CLV as directional, not as tight as the ATS%/ROI columns next to it.
+
+| | All predictions (calibration, §5) | Bet-subset only (edge ≥ 3, §5) |
+|---|---|---|
+| 2020 | n=0 (see above — no opening-line coverage, not scored) | n=0 |
+| 2021 | 682, ATS 48.7%, ROI -7.0%, CLV +0.10 | 494, ATS 49.2%, ROI -6.0%, CLV +0.07 |
+| 2022 | 674, ATS 53.0%, ROI +1.2%, CLV -0.04 | 478, ATS 52.6%, ROI +0.3%, CLV +0.01 |
+| 2023 | 698, ATS 50.7%, ROI -3.2%, CLV +0.36 | 492, ATS 50.5%, ROI -3.5%, CLV +0.52 |
+| 2024 | 712, ATS 52.1%, ROI -0.6%, CLV +0.09 | 480, ATS 55.2%, ROI +5.3%, CLV +0.13 |
+| 2025 | 713, ATS 50.9%, ROI -2.7%, CLV +0.11 | 483, ATS 49.4%, ROI -5.7%, CLV +0.12 |
+| **2021-2025 combined** | **3479, ATS 51.1%, ROI -2.5%, CLV +0.13** | **2427, ATS 51.3%, ROI -2.0%, CLV +0.17** |
+
+**This is the correct, expected result per §6, not a failure.** ATS sits in a 48.7%-55.2% band around 50% across 5 seasons × 2 subsets (10 cells) — exactly the spread of noise expected from a single-feature model with no real edge against an efficient market. Combined ROI is *negative* (-2.0% to -2.5%), consistent with a ~50% true hit rate losing to standard -110 juice, not a profitable result that would need explaining away. Checked per instruction ("a profitable baseline would be suspicious") — nothing here is profitable enough, or consistently enough, to suspect a lookahead leak.
+
+**The edge≥3 filter is not demonstrably adding signal yet — don't read the 2024 cell as proof it works.** 2024's bet-subset (55.2% ATS, +5.3% ROI) is the one green cell in the table, but the same filter runs *cold* in 2021 (49.2%, -6.0%), 2023 (50.5%, -3.5%), and 2025 (49.4%, -5.7%), and roughly flat in 2022 (52.6% vs. 53.0% all-predictions) — four of the five seasons with data show no improvement, one shows a lot. A filter that helped would show up consistently across seasons, not in one out of five. The honest read is the aggregate (~51% ATS both ways, bet-subset barely different from all-predictions), consistent with no real edge from this threshold on this baseline yet. `EDGE_THRESHOLD = 3.0` remains an unvalidated placeholder (§8b already says as much for staking; this extends that caution to the threshold itself).
+
+### New files
+
+`models/backtest_harness.py` (the harness), `models/baseline_epa.py` (the one-feature model), `models/run_backtest.py` (CLI runner + season/subset reporting), `tests/test_backtest_harness.py` (30 tests), `tests/test_baseline_epa.py` (4 tests).
+
+Not yet committed — pending review.
