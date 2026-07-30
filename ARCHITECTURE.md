@@ -340,4 +340,49 @@ Ran for real, no `--force` (idempotency handled resuming from the two already-in
 
 With this, `betting_lines` and `team_game_stats` are both archived and joining correctly across all 7 seasons (2019-2025), verified end-to-end with a real assembled example before the full run and comprehensive row-count/anomaly checks after. This closes out the "stats + lines archived and joining correctly" milestone. Feature engineering and the prediction model are the next conversation.
 
-Not yet committed — pending final review.
+Committed as `6aa1fa9`.
+
+## 13. Point-in-time weekly stats backfill (2026-07-30)
+
+A separate design conversation produced `MODEL_DESIGN.md`, the full spec for the prediction-model phase. Its §1 flagged a critical, session-consistent-style finding: `team_game_stats` stores **season-final** SP+/EPA (one row per team per season) — confirmed via `SELECT COUNT(DISTINCT sp_rating) ... WHERE season=2023 AND team='Georgia'` returning 1. Using Georgia's final 2023 SP+ to predict their week 3 2023 game means the rating already reflects how the whole season turned out — fatal for an honest backtest. Full rationale, the walk-forward harness design, and the rest of the model architecture live in `MODEL_DESIGN.md`; this section covers only the data-layer fix.
+
+### Live verification before building anything
+
+Per the same discipline as every ingestion path this session: checked CFBD's actual behavior before writing code, assuming it was broken until proven otherwise.
+
+**SP+ (`/ratings/sp`) — backfill-blocked, not deferred.** Direct A/B test, Georgia 2023: `week=3` → rating 31.2, `week=8` → 31.2, `week=13` → 31.2, no `week` param at all → 31.2. Identical in every field. Checked for alternates (`/ratings/sp/conferences` — conference-level; `/ratings/srs` — a different rating system, not SP+; `/rankings` — poll rankings, not SP+). **None serve historical point-in-time SP+.** CFBD only retains the season-final SP+ for a completed season — there is nothing to backfill, this isn't a "defer to later."
+
+**EPA/success rate/havoc (`/stats/season/advanced` via `endWeek`) — genuinely point-in-time.** Same team/season, values actually move: `endWeek=3` → offense.ppa 0.311, `endWeek=8` → 0.377, `endWeek=13` → 0.395, full season → 0.400. Success rate and havoc from the same call move too. Confirmed `endWeek` alone (no `startWeek`) correctly defaults to season start (173 plays either way).
+
+This split — SP+ blocked, everything else from `/stats/season/advanced` fine — is different from `MODEL_DESIGN.md` §3's original plan (SP++EPA now, success rate/havoc deferred to save a second verification pass). Since all three non-SP+ metrics come from one already-verified call, deferring them saved nothing; backfilled all three together. Owner reviewed the full comparison and made this call explicitly.
+
+### Built: `data/backfill_point_in_time_stats.py`
+
+One row per team per **week** (not per season) in `team_game_stats`, tagged `source='cfbd_point_in_time'`, `sp_rating` always `NULL`. Idempotent (skips an ingested week with zero API calls unless `--force`) — and `--force` was fixed during review to **replace** rather than duplicate a snapshot, since (unlike `betting_lines`' genuine append-only design) consumers need exactly one canonical row per team/week; caught this before it shipped as a gap. Same 429-aware retry/backoff as the lines backfill. 8 new tests (mirroring the established pattern): row insertion, idempotency, force-replace-not-duplicate, `sp_rating` always null, and the retry/give-up paths. 41 tests passed before the full run.
+
+**Documented explicitly for whoever builds feature engineering next:** a row with `week=N` holds stats cumulative *through* week N's games. Predicting week N's games must join against `week=N-1` (or the latest available prior week), never `week=N` itself.
+
+### Full 2019–2025 × weeks 1–15 run — verified
+
+```
+13,290 rows total (source=cfbd_point_in_time)
+0 duplicate (season, week, team) combinations
+0 rows with non-NULL sp_rating
+```
+
+Georgia 2023, weeks 3/6/9/12 — proof the numbers genuinely move, not frozen like SP+ was:
+
+| week | offense_epa_play | defense_epa_play | off_success_rate | def_success_rate | havoc_rate |
+|---|---|---|---|---|---|
+| 3 | 0.311 | -0.016 | 0.520 | 0.299 | 0.204 |
+| 6 | 0.378 | 0.024 | 0.538 | 0.347 | 0.183 |
+| 9 | 0.383 | 0.056 | 0.521 | 0.344 | 0.186 |
+| 12 | 0.403 | 0.098 | 0.516 | 0.361 | 0.172 |
+
+2020's team-count ramp-up (14 teams at week 1 → 128 by week 15) reflects the same real COVID-delayed schedule already confirmed in §12 — not a new anomaly. No rate limits triggered; 0 empty/failed weeks.
+
+### `MODEL_DESIGN.md` updated to match
+
+§1 and §3 revised to state the actual finding (SP+ blocked, not deferred) rather than the original plan (SP++EPA now, success rate/havoc later). Added an explicit honesty caveat: **the 2019-2025 backtest has no SP+ feature at all; live predictions eventually will, once enough live-forward SP+ history accumulates.** These are not the same feature set and must never be silently compared as if they were — any future "does adding SP+ help" comparison needs its own controlled test. §2 and §6's baseline-definition references to "SP+/EPA only" were also flagged as outdated given SP+'s absence.
+
+Also fixed while opening `MODEL_DESIGN.md`: the committed file had every line wrapped in a spurious leading `# ` (turning every paragraph into an H1 heading) plus backslash-escaped markdown (`\*\*`, `\#`, `\---`) and literal `&#x20;` space entities — an artifact from whatever export process produced it, not intentional formatting. Cleaned mechanically (stripped the artifact prefix, unescaped the backslash sequences, replaced the entities, collapsed doubled blank lines) and diffed the result against a manual read of the original to confirm no content changed, only its renderability.
