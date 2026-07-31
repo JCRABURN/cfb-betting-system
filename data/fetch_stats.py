@@ -23,21 +23,32 @@ HEADERS = {
 
 
 def get_current_week():
-    """Return current CFB week, defaulting gracefully during offseason."""
-    try:
-        url = f"{CFBD_BASE}/calendar"
-        resp = requests.get(url, headers=HEADERS)
-        resp.raise_for_status()
-        weeks = resp.json()
-        now = datetime.utcnow().isoformat()
-        for week in weeks:
-            if week.get("firstGameStart", "") <= now <= week.get("lastGameStart", "9999"):
-                return week.get("week", 1), datetime.utcnow().year
-        print("No active week found in calendar, defaulting to Week 1")
-        return 1, datetime.utcnow().year
-    except Exception as e:
-        print(f"Calendar API unavailable ({e}), defaulting to Week 1 offseason mode")
-        return 1, datetime.utcnow().year
+    """Return current CFB week.
+
+    Deliberately does NOT catch calendar API failures and fall back to week 1.
+    Week 1 always has real, completed games once the season has started, so a
+    mid-season /calendar failure (network blip, rate limit, schema change)
+    would otherwise cause main() to silently fetch and persist stale week-1
+    data as if it were the current week -- the `if not games` guard in
+    main() doesn't catch this, since week 1's games list is never empty.
+    Letting this raise means db.log_run() logs it to ingestion_runs as a
+    failed run and the GitHub Actions step fails visibly instead.
+
+    "No active week found" (every week's window has passed `now`, or the
+    calendar is genuinely pre-season) is a different, legitimate case and
+    still defaults to week 1 softly -- main()'s `if not games` guard does
+    correctly no-op that case into an offseason placeholder.
+    """
+    url = f"{CFBD_BASE}/calendar"
+    resp = requests.get(url, headers=HEADERS)
+    resp.raise_for_status()
+    weeks = resp.json()
+    now = datetime.utcnow().isoformat()
+    for week in weeks:
+        if week.get("firstGameStart", "") <= now <= week.get("lastGameStart", "9999"):
+            return week.get("week", 1), datetime.utcnow().year
+    print("No active week found in calendar, defaulting to Week 1 (offseason)")
+    return 1, datetime.utcnow().year
 
 
 def fetch_games(year, week):

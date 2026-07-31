@@ -183,6 +183,24 @@ def resolve_school_name(schools, odds_team_name):
     return max(candidates, key=len)
 
 
+def opening_line_recorded(conn, week, year):
+    """Whether an opening line already exists in the DB for this week.
+
+    Checked against betting_lines (the persistent store), not the local
+    data/spreads/opening_week_*.json file: that file lives in a gitignored
+    directory and doesn't survive between GitHub Actions runs (fresh checkout
+    every time), so checking it always says "no, this is the first pull" --
+    meaning a manual mid-week workflow_dispatch re-run would insert a second,
+    later line mislabeled line_type='opening' and corrupt the CLV baseline
+    for every game that week.
+    """
+    row = conn.execute(
+        "SELECT 1 FROM betting_lines WHERE season = ? AND week = ? AND line_type = 'opening' LIMIT 1",
+        (year, week),
+    ).fetchone()
+    return row is not None
+
+
 def find_game_id(conn, week, year, home, away):
     """Best-effort join to the CFBD games row via team name (Odds API has its own id space)."""
     row = conn.execute(
@@ -262,9 +280,14 @@ def main():
             print("No stats files found. Run fetch_stats.py first.")
             return
 
-        latest = sorted(stats_files)[-1]
-        with open(latest, encoding="utf-8") as f:
-            meta = json.load(f)
+        # Filenames aren't zero-padded (week_10_2026.json vs week_2_2026.json),
+        # so sorting the paths as strings picks week 2 over week 10. Load each
+        # file's own (year, week) fields and compare those as integers instead.
+        metas = []
+        for path in stats_files:
+            with open(path, encoding="utf-8") as f:
+                metas.append(json.load(f))
+        meta = max(metas, key=lambda m: (m["year"], m["week"]))
         week = meta["week"]
         year = meta["year"]
 
@@ -277,11 +300,13 @@ def main():
         print(f"Fetching odds for Week {week}, {year}")
         current_lines = fetch_current_lines()
 
-        # Save as opening lines if this is the first pull of the week
-        opening_lines_exist = os.path.exists(
-            f"data/spreads/opening_week_{week}_{year}.json"
-        )
-        is_opening_pull = not opening_lines_exist
+        # Save as opening lines if this is the first pull of the week --
+        # checked against the DB, not a local file (see opening_line_recorded).
+        conn = db.get_connection()
+        try:
+            is_opening_pull = not opening_line_recorded(conn, week, year)
+        finally:
+            conn.close()
         if is_opening_pull:
             save_lines(current_lines, week, year, label="opening")
 
