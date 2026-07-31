@@ -41,6 +41,7 @@ import sys
 import os
 import math
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -149,6 +150,59 @@ def get_closing_line(conn, game_id, book=None):
     return {"home_spread": row[0], "total": row[1], "book": row[2]}
 
 
+def _parse_date(iso_string):
+    """games.start_date is CFBD's ISO-8601 UTC format ('2024-11-02T19:30:00.000Z'),
+    confirmed live (0 NULLs, all 7 seasons) -- Python's fromisoformat needs the
+    trailing 'Z' swapped for an explicit offset."""
+    return datetime.fromisoformat(iso_string.replace("Z", "+00:00"))
+
+
+def get_days_rest(conn, team, season, game_date):
+    """Days since `team`'s most recent PRIOR completed game this season,
+    strictly before `game_date` (an ISO date string, e.g. the target game's
+    own start_date). Returns None if no such game exists -- week 1, or a
+    team's true season opener -- the caller must skip, not assume a default.
+    Deliberately scoped to the SAME SEASON only: reaching into the previous
+    season's bowl game would call the offseason "rest," which isn't a
+    meaningful comparison to in-season rest.
+
+    Checks both `games` (FBS-only by design, see Phase 3) and
+    `supplemental_game_dates` (dates-only recovery for cases where a team's
+    actual prior game was an FBS-vs-FCS buy game and so isn't in `games` at
+    all -- confirmed live: 204 of ~3,479 games, concentrated in weeks 2-3,
+    found while building the rest/schedule feature test), and takes
+    whichever is more recent -- a team could have a supplemental FCS game
+    date AND a later FBS game already logged, and the later one wins."""
+    row = conn.execute(
+        """
+        SELECT start_date FROM games
+        WHERE season = ? AND completed = 1
+          AND (home_team = ? OR away_team = ?)
+          AND start_date < ?
+        ORDER BY start_date DESC
+        LIMIT 1
+        """,
+        (season, team, team, game_date),
+    ).fetchone()
+    best_date = row[0] if row else None
+
+    supp_row = conn.execute(
+        """
+        SELECT start_date FROM supplemental_game_dates
+        WHERE season = ? AND team = ? AND start_date < ?
+        ORDER BY start_date DESC
+        LIMIT 1
+        """,
+        (season, team, game_date),
+    ).fetchone()
+    if supp_row is not None and (best_date is None or supp_row[0] > best_date):
+        best_date = supp_row[0]
+
+    if best_date is None:
+        return None
+    return (_parse_date(game_date) - _parse_date(best_date)).days
+
+
 def get_final_score(conn, game_id):
     row = conn.execute(
         "SELECT home_points, away_points, completed FROM games WHERE game_id = ?",
@@ -164,26 +218,38 @@ def get_final_score(conn, game_id):
 # function as a plain dict -- no db connection ever passed through.
 # ---------------------------------------------------------------------------
 
-def get_pregame_stats(conn, home_team, away_team, season, week):
-    """Just the stats half of the package -- used for TRAINING set
+def get_pregame_stats(conn, home_team, away_team, season, week, game_date):
+    """The stats + situational half of the package -- used for TRAINING set
     construction, which needs (feature, actual_margin) pairs only, never a
     betting line. Keeping this separate from build_feature_package means
     2019/2020's total absence of opening lines (see get_opening_line) doesn't
     wrongly starve the training set of games it never actually needed a line
-    for in the first place."""
+    for in the first place.
+
+    home_days_rest/away_days_rest may be None (e.g. week 1, no prior game
+    this season) -- unlike offense_epa_play etc., this does NOT fail the
+    whole package. Whether missing rest is fatal is up to each feature_fn to
+    decide (return None itself if it needs rest and doesn't have it), same
+    contract as havoc_rate's occasional NULLs -- team_game_stats fields are
+    the hard requirement here, rest is an optional situational add-on."""
     home_stats = get_team_stats_as_of(conn, home_team, season, week)
     away_stats = get_team_stats_as_of(conn, away_team, season, week)
     if home_stats is None or away_stats is None:
         return None
-    return {"home_stats": home_stats, "away_stats": away_stats}
+    return {
+        "home_stats": home_stats,
+        "away_stats": away_stats,
+        "home_days_rest": get_days_rest(conn, home_team, season, game_date),
+        "away_days_rest": get_days_rest(conn, away_team, season, game_date),
+    }
 
 
-def build_feature_package(conn, game_id, season, week, home_team, away_team):
+def build_feature_package(conn, game_id, season, week, home_team, away_team, game_date):
     """Returns the sealed package for one game, or None (with a reason) if
     anything required is missing -- caller must skip, not substitute. Used
     for the actual PREDICT step, which does need a line (to compute edge and
     to grade against)."""
-    stats = get_pregame_stats(conn, home_team, away_team, season, week)
+    stats = get_pregame_stats(conn, home_team, away_team, season, week, game_date)
     if stats is None:
         return None, "missing_pregame_stats"
 
@@ -194,6 +260,8 @@ def build_feature_package(conn, game_id, season, week, home_team, away_team):
     return {
         "home_stats": stats["home_stats"],
         "away_stats": stats["away_stats"],
+        "home_days_rest": stats["home_days_rest"],
+        "away_days_rest": stats["away_days_rest"],
         "opening_spread": opening["home_spread"],
         "opening_total": opening["total"],
         "opening_book": opening["book"],
@@ -210,7 +278,7 @@ def build_feature_package(conn, game_id, season, week, home_team, away_team):
 def list_games(conn, season, week):
     return conn.execute(
         """
-        SELECT game_id, home_team, away_team, home_points, away_points
+        SELECT game_id, home_team, away_team, home_points, away_points, start_date
         FROM games
         WHERE season = ? AND week = ? AND completed = 1
         ORDER BY game_id
@@ -391,8 +459,8 @@ def build_training_set(conn, feature_fn, seasons_before):
     rows, ys = [], []
     for season in seasons_before:
         for week in list_weeks(conn, season):
-            for game_id, home_team, away_team, home_points, away_points in list_games(conn, season, week):
-                stats = get_pregame_stats(conn, home_team, away_team, season, week)
+            for game_id, home_team, away_team, home_points, away_points, start_date in list_games(conn, season, week):
+                stats = get_pregame_stats(conn, home_team, away_team, season, week, start_date)
                 if stats is None:
                     continue
                 feature_row = feature_fn(stats)
@@ -442,8 +510,9 @@ def run_walk_forward(conn, seasons, feature_fn, predict_fn):
         season_fits[season] = (intercept, coefs)
 
         for week in list_weeks(conn, season):
-            for game_id, home_team, away_team, home_points, away_points in list_games(conn, season, week):
-                package, reason = build_feature_package(conn, game_id, season, week, home_team, away_team)
+            for game_id, home_team, away_team, home_points, away_points, start_date in list_games(conn, season, week):
+                package, reason = build_feature_package(
+                    conn, game_id, season, week, home_team, away_team, start_date)
                 if package is None:
                     records.append(PredictionRecord(
                         game_id=game_id, season=season, week=week,

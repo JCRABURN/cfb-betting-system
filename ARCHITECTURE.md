@@ -546,4 +546,60 @@ Coefficient sign (havoc term), all 6 season fits: always positive
 
 `models/feature_havoc.py`, `models/run_feature_test_havoc.py` (entry point), `tests/test_feature_havoc.py` (7 tests), plus the `None`-contract extension to `backtest_harness.py` (2 new tests) and the intersection-based sanity check in `run_feature_test.py`. 94 tests pass across the whole suite.
 
+Committed as `2616aea`.
+
+## 17. Third one-at-a-time feature test: rest/schedule — REJECTED (2026-07-31)
+
+Owner's framing going in: success rate and havoc both failed because they're on-field performance summaries overlapping what EPA already captures. Rest/schedule is structurally different — EPA cannot see a short week or a bye, since that's not in any performance stat, only in the schedule itself. Same three pre-registered criteria, same bar, tested independently against the EPA-only baseline.
+
+### Verified date reliability before building anything (per instruction)
+
+`games.start_date`: 0 NULLs across all 4,952 games, every season 2019-2025, clean ISO-8601 UTC format (`2024-11-02T19:30:00.000Z`), confirmed parseable with `datetime.fromisoformat` after swapping the trailing `Z` for an explicit offset. Also computed the real rest-day distribution across 8,981 team-game observations before picking a bye threshold, rather than guessing: a clean bimodal split, 6-8 days (normal week, ~7,000 observations) vs. 13-14 days (bye, ~1,418), with only a thin 9-12 day zone between (357). `BYE_THRESHOLD_DAYS=10` cleanly separates the two humps.
+
+### Two situational features, one test
+
+`models/feature_rest.py`: days-of-rest differential (home minus away) and a bye-week-flag differential, both bundled as one "rest/schedule" test per MODEL_DESIGN.md's "Later features" framing (one theme, not two separate one-at-a-time tests). Both computed via a new harness accessor, `get_days_rest(conn, team, season, game_date)` — the most recent prior completed game for that team, strictly before `game_date`, scoped to the same season only (reaching into the previous season's bowl game would call the offseason "rest," not a meaningful in-season comparison). Threaded `start_date` through `list_games`/`get_pregame_stats`/`build_feature_package` to support this, extending (not replacing) the existing point-in-time accessor pattern.
+
+### A structural data gap found and fixed, not worked around
+
+First run: 161 games (4.63%) had no computable rest for one team — well above the 1% threshold that auto-proceeds on the intersection (see §16), so it correctly hard-stopped rather than silently comparing a smaller, differently-composed sample. Investigated the actual case (Georgia vs. UAB, 2021 week 2): **UAB's actual week-1 2021 game (vs. Jacksonville State, an FCS opponent) simply isn't in our `games` table at all**, because `games` is intentionally FBS-only (a Phase 3 design decision, not a bug). This meant `get_days_rest` correctly found no prior FBS game — but the *real* prior game exists, just not in our archive.
+
+This is a fundamentally different kind of gap than havoc's coincidental 0.13% NULL rate: it's systematic (concentrated in weeks 2-3, when FCS buy games cluster) and, as the owner flagged before authorizing any fix, **non-random with respect to what the feature measures** — excluding these games would have biased the test toward "does rest help when it's cleanly computable" rather than the real question. Per instruction, time-boxed a check before deciding how to handle it: confirmed live that CFBD's `/games` endpoint returns FBS-vs-FCS games (with dates) when not filtered by classification — one call, immediate confirmation.
+
+Identified the exact scope before fetching anything: 204 unique `(team, season, week)` gaps, concentrated in just 7 distinct `(season, week)` combinations. Fetched those 7 weeks unfiltered by classification (each returning the full multi-division slate) and resolved 201 of 204 immediately; the remaining 3 (e.g. Purdue 2024 week 3) needed one week further back, since those teams had a **second**, genuine bye immediately after their FCS game — the data for those was already in the same 7 fetches, just needed a "most recent match across all fetched weeks" lookup instead of an exact "week - 1" assumption. All 204 resolved with zero additional API calls.
+
+Built this as a proper, reusable, idempotent script rather than a one-off patch: `data/backfill_rest_dates.py` finds gaps generically (any `(team, season, week)` where both teams have EPA available but rest doesn't compute — not hardcoded to the 204 already found, so it'll pick up new gaps automatically for future seasons), searches back up to 4 weeks per gap with a per-`(season, week)` fetch cache to bound API calls, and stores results in a new `supplemental_game_dates` table — **dates only, not full game rows** (no score, no FK to `games`, no opponent-as-tracked-entity), keeping `games`' FBS-only scope untouched. `get_days_rest` now checks both tables and takes whichever date is more recent. Logged to `ingestion_runs` like every other ingestion script.
+
+Ran it for real: 204/204 gaps resolved, 0 unresolved, 0 API calls beyond the 7 needed. Re-ran the full test suite (110 tests) and the feature test with full coverage confirmed: **3,479 games compared, no exclusion note** — the complete, unbiased sample the owner asked for.
+
+### Result
+
+```
+McNemar 2x2 table (87 disagreement games, decided both ways):
+  Challenger right (baseline wrong): 50
+  Baseline right (challenger wrong): 37
+  chi2 = 1.655, p = 0.1983                              -> FAIL (need p<0.05)
+
+Per-season ATS, baseline -> challenger:
+  2021: 48.7% -> 49.3%  (+0.6pp)  improved
+  2022: 53.0% -> 52.9%  (-0.2pp)  no improvement
+  2023: 50.7% -> 51.1%  (+0.4pp)  improved
+  2024: 52.1% -> 53.1%  (+1.0pp)  improved
+  2025: 50.9% -> 50.9%  ( 0.0pp)  no change
+  Improved in 3/5 seasons                               -> FAIL (need >=4/5)
+
+Coefficient signs (rest_diff, bye_diff), all 6 season fits:
+  2020: (-0.80, +4.93)   2021: (-0.09, +1.21)   2022: (-0.01, -0.53)
+  2023: (+0.02, -0.80)   2024: (-0.03, -0.44)   2025: (-0.07, -0.27)
+  Observed sign patterns: {(-1,+1), (+1,-1), (-1,-1)}    -> FAIL (flips)
+```
+
+**This is the first feature to fail all three criteria, not two.** Notably, it's also the *closest* on two of them — p=0.20 (vs. 0.82 and 1.00 for success rate/havoc) and 3/5 seasons improved (vs. 2/5 for both prior features) — but "closest to the bar" is not "clears the bar," and the pre-registered bar doesn't move for a plausible-sounding feature that came closer. The coefficient-sign instability is the clearest tell: both `rest_diff` and `bye_diff` flip sign repeatedly across the six season fits, meaning whatever small effect the model finds isn't a consistent, learnable relationship — it's noise the fit is chasing differently each time it's re-estimated on a different training window.
+
+**Verdict: DO NOT KEEP, per the same pre-registered bar as the other two.** Three independent feature candidates now tested, three rejected. EPA alone remains the only feature that has survived testing.
+
+### New files
+
+`models/feature_rest.py`, `models/run_feature_test_rest.py` (entry point), `data/backfill_rest_dates.py` (reusable, idempotent supplemental backfill), `tests/test_feature_rest.py` (10 tests), plus `get_days_rest()` + the `supplemental_game_dates` table + 6 new tests in `test_backtest_harness.py`, and the `start_date` threading through `list_games`/`get_pregame_stats`/`build_feature_package`. 110 tests pass across the whole suite.
+
 Not yet committed — pending review.

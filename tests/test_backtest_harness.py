@@ -11,11 +11,12 @@ import pytest
 import backtest_harness as bh
 
 
-def insert_game(conn, game_id, season, week, home, away, home_pts=None, away_pts=None, completed=1):
+def insert_game(conn, game_id, season, week, home, away, home_pts=None, away_pts=None,
+                 completed=1, start_date=None):
     conn.execute(
-        "INSERT INTO games (game_id, season, week, home_team, away_team, home_points, away_points, completed) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (game_id, season, week, home, away, home_pts, away_pts, completed),
+        "INSERT INTO games (game_id, season, week, home_team, away_team, home_points, away_points, "
+        "completed, start_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (game_id, season, week, home, away, home_pts, away_pts, completed, start_date),
     )
 
 
@@ -83,6 +84,75 @@ def test_ignores_non_point_in_time_source(temp_db):
     result = bh.get_team_stats_as_of(conn, "Georgia", 2023, 9)
     conn.close()
     assert result is None
+
+
+# ---------------------------------------------------------------------------
+# get_days_rest -- the situational (date-based) accessor
+# ---------------------------------------------------------------------------
+
+def test_get_days_rest_normal_week(temp_db):
+    conn = temp_db.get_connection()
+    insert_game(conn, 1, 2023, 4, "Georgia", "Kentucky", 30, 10,
+                start_date="2023-09-23T19:00:00.000Z")
+    conn.commit()
+    days = bh.get_days_rest(conn, "Georgia", 2023, "2023-09-30T19:00:00.000Z")
+    conn.close()
+    assert days == 7
+
+
+def test_get_days_rest_after_a_bye(temp_db):
+    conn = temp_db.get_connection()
+    insert_game(conn, 1, 2023, 3, "Georgia", "Kentucky", 30, 10,
+                start_date="2023-09-16T19:00:00.000Z")
+    conn.commit()
+    # No week-4 game for Georgia (bye) -- next game is two weeks later
+    days = bh.get_days_rest(conn, "Georgia", 2023, "2023-09-30T19:00:00.000Z")
+    conn.close()
+    assert days == 14
+
+
+def test_get_days_rest_none_when_no_prior_game_this_season(temp_db):
+    """Week 1 case -- no prior same-season game exists at all."""
+    conn = temp_db.get_connection()
+    conn.commit()
+    days = bh.get_days_rest(conn, "Georgia", 2023, "2023-09-02T19:00:00.000Z")
+    conn.close()
+    assert days is None
+
+
+def test_get_days_rest_does_not_reach_into_previous_season(temp_db):
+    """Adversarial: a bowl game in the PRIOR season must never count as
+    'rest' for this season's opener -- that would call the offseason rest,
+    which isn't a meaningful in-season comparison."""
+    conn = temp_db.get_connection()
+    insert_game(conn, 1, 2022, 15, "Georgia", "Alabama", 33, 18,
+                start_date="2022-12-31T19:00:00.000Z")  # prior-season bowl game
+    conn.commit()
+    days = bh.get_days_rest(conn, "Georgia", 2023, "2023-09-02T19:00:00.000Z")
+    conn.close()
+    assert days is None  # not ~245 days from the bowl game
+
+
+def test_get_days_rest_uses_most_recent_prior_game_not_earliest(temp_db):
+    conn = temp_db.get_connection()
+    insert_game(conn, 1, 2023, 2, "Georgia", "Ball State", 45, 3,
+                start_date="2023-09-09T19:00:00.000Z")
+    insert_game(conn, 2, 2023, 3, "Georgia", "UAB", 40, 10,
+                start_date="2023-09-16T19:00:00.000Z")
+    conn.commit()
+    days = bh.get_days_rest(conn, "Georgia", 2023, "2023-09-23T19:00:00.000Z")
+    conn.close()
+    assert days == 7  # from week 3's game, not week 2's
+
+
+def test_get_days_rest_finds_team_whether_home_or_away(temp_db):
+    conn = temp_db.get_connection()
+    insert_game(conn, 1, 2023, 3, "Kentucky", "Georgia", 10, 30,
+                start_date="2023-09-16T19:00:00.000Z")  # Georgia played AWAY here
+    conn.commit()
+    days = bh.get_days_rest(conn, "Georgia", 2023, "2023-09-23T19:00:00.000Z")
+    conn.close()
+    assert days == 7
 
 
 # ---------------------------------------------------------------------------
@@ -210,7 +280,7 @@ def test_package_skipped_when_pregame_stats_missing(temp_db):
     insert_game(conn, 1, 2023, 1, "H", "A")
     insert_line(conn, 1, 2023, 1, -3.5, "opening")
     conn.commit()
-    package, reason = bh.build_feature_package(conn, 1, 2023, 1, "H", "A")
+    package, reason = bh.build_feature_package(conn, 1, 2023, 1, "H", "A", "2023-09-02T19:00:00.000Z")
     conn.close()
     assert package is None
     assert reason == "missing_pregame_stats"
@@ -221,7 +291,7 @@ def test_package_skipped_when_opening_line_missing(temp_db):
     insert_stats(conn, 2023, 3, "H", 0.1)
     insert_stats(conn, 2023, 3, "A", 0.05)
     conn.commit()
-    package, reason = bh.build_feature_package(conn, 1, 2023, 5, "H", "A")
+    package, reason = bh.build_feature_package(conn, 1, 2023, 5, "H", "A", "2023-10-01T19:00:00.000Z")
     conn.close()
     assert package is None
     assert reason == "missing_opening_line"
@@ -234,7 +304,7 @@ def test_package_built_when_everything_present(temp_db):
     insert_stats(conn, 2023, 3, "A", 0.05)
     insert_line(conn, 1, 2023, 5, -3.5, "opening")
     conn.commit()
-    package, reason = bh.build_feature_package(conn, 1, 2023, 5, "H", "A")
+    package, reason = bh.build_feature_package(conn, 1, 2023, 5, "H", "A", "2023-10-01T19:00:00.000Z")
     conn.close()
     assert reason is None
     assert package["home_stats"]["offense_epa_play"] == 0.10

@@ -402,7 +402,25 @@ Added one at a time, each measured against the baseline:
 - Coach ATS situational splits: as underdog, off a bye, first year at a new
   program. (Raw career coach ATS% is mostly noise / small-sample — use
   *situational* splits with a plausible mechanism, not overall records.)
-- Rest / schedule spots (bye weeks, short weeks, 3rd straight road game).
+- ~~Rest / schedule spots (bye weeks, short weeks, 3rd straight road game).~~
+  **Tested 2026-07-31, REJECTED** — see ARCHITECTURE.md §17. Days-of-rest
+  differential + bye-week-flag differential, computed point-in-time from
+  `games.start_date` (dates confirmed 100% reliable, 0 NULLs, before
+  building). Failed all three criteria — the first feature to fail
+  coefficient-sign stability too, not just McNemar/per-season: the
+  rest/bye coefficient signs flipped across seasons
+  (`{(-1,1), (1,-1), (-1,-1)}` observed), unlike EPA's and even the
+  two rejected performance stats' consistently-signed coefficients.
+  McNemar was the closest of the three features tested so far (p=0.20
+  on 87 disagreement games, vs. 0.82 and 1.00 for success rate/havoc)
+  and improved in 3/5 seasons (also the best showing yet) — still a
+  clear miss against the pre-registered bar, not treated as a near-pass.
+  Building this also surfaced and fixed a real, structural data gap:
+  `games` is intentionally FBS-only, so 204 (team, season, week) cases
+  had no computable rest because the team's actual prior game was an
+  FBS-vs-FCS buy game not in the archive. Recovered via a small,
+  bounded, time-boxed CFBD query (dates only, not full game rows) —
+  see ARCHITECTURE.md §17 for the full investigation.
 - Rivalry / letdown / look-ahead motivational spots.
 - ~~Success rate + havoc (once weekly-backfilled per §3).~~ Both **tested**
   **2026-07-30, both REJECTED** — see the feature-test log in

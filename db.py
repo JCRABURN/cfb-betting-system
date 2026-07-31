@@ -187,6 +187,29 @@ CREATE INDEX IF NOT EXISTS idx_betting_lines_lookup
 
 CREATE INDEX IF NOT EXISTS idx_games_season_week
     ON games (season, week);
+
+-- Added 2026-07-31, for the rest/schedule feature test (MODEL_DESIGN.md
+-- "Later features"): `games` is intentionally FBS-only (see Phase 3), so a
+-- team's rest calculation breaks when their actual most recent game was an
+-- FBS-vs-FCS buy game not in that table. This does NOT duplicate `games`'
+-- scope -- it stores only the one field backtest_harness.get_days_rest()
+-- needs (the date), never a full game row (no score, no opponent-as-a-
+-- tracked-entity, no FK to games). Populated by
+-- data/backfill_rest_dates.py, which only ever fills in gaps found in the
+-- FBS-only archive, on demand.
+CREATE TABLE IF NOT EXISTS supplemental_game_dates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    team TEXT NOT NULL,
+    season INTEGER NOT NULL,
+    week INTEGER NOT NULL,
+    start_date TEXT NOT NULL,
+    opponent_classification TEXT,
+    source TEXT NOT NULL DEFAULT 'cfbd_supplemental_dates',
+    fetched_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_supplemental_game_dates_lookup
+    ON supplemental_game_dates (team, season, week);
 """
 
 
