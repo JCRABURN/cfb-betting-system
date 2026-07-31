@@ -39,6 +39,22 @@ def fmt_row(label, agg):
     return base + "CLV n/a"
 
 
+def bucket_by_edge(records, buckets):
+    """records: PredictionRecord list, already filtered to whatever subset
+    matters (e.g. edge >= 3.0). buckets: ordered list of (lo, hi) tuples,
+    e.g. [(3.0, 6.0), (6.0, 10.0), (10.0, float('inf'))] -- lo <= edge < hi.
+    Returns a list of (label, aggregate_dict) pairs in the same order as
+    `buckets`, using each record's OWN `edge` field -- so this reflects
+    whatever model produced `records`, not a fixed baseline bucketing
+    reapplied to a different model's numbers (see ARCHITECTURE.md §19/§20)."""
+    results = []
+    for lo, hi in buckets:
+        subset = [r for r in records if lo <= r.edge < hi]
+        label = f"{lo:.0f}-{hi:.0f}" if hi != float("inf") else f"{lo:.0f}+"
+        results.append((label, aggregate(subset)))
+    return results
+
+
 def print_diagnostics(records, seasons):
     graded = [r for r in records if r.skipped_reason is None]
     skipped = [r for r in records if r.skipped_reason is not None]

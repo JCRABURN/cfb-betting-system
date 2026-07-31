@@ -660,3 +660,55 @@ Every honest slice of this backtest — all-predictions (51.1%), the edge>=3 bet
 ### Tests
 
 10 new/updated tests in `tests/test_card_generator.py` for the confidence redesign (exact-threshold boundary, flagged-list contents, no reordering). 120 tests pass across the whole suite.
+
+## 20. Three structural fixes for the 10+ edge bucket — all rejected (2026-08-01)
+
+§19 found the demonstrated weakness: the 10+ edge bucket is the worst-performing of the three, not the best, consistent with the linear EPA model extrapolating too aggressively in mismatch games. Rather than another new feature, tested three structural changes to how the EXISTING EPA information is used — one at a time, against a pre-registered bar, locked before any variant ran or its results were seen.
+
+### The bar (locked before running)
+
+Three criteria, ALL required — deliberately different from `run_feature_test.py`'s bar (aggregate ATS improvement + coefficient sign stability), because the question here isn't "does this add signal," it's "does this fix the specific broken bucket":
+
+1. **McNemar's test on disagreement games vs. the EPA-only baseline, p < 0.05.** Same sharp instrument as every feature test — only the games a variant actually changes the pick on are informative.
+2. **The variant's own 10+ bucket must not be the worst of its own three buckets** (ATS% >= both the 3-6 and 6-10 buckets, aggregate 2021-2025). Recomputed using the variant's *own* edge values, since edge depends on predicted_margin, which every variant here changes — a game can shift buckets between models.
+3. **The variant's 10+ bucket ATS% must beat the baseline's 10+ bucket ATS% in at least 4 of 5 graded seasons** — a fix that only works in one lucky season doesn't count, the same lesson the edge-bucket check itself just taught (§19's 6-10 bucket: 60.7%/41.5% hot/cold swing hiding inside a decent aggregate).
+
+Two design choices confirmed live before locking numbers, not guessed: the full training archive's `|epa_diff|` percentiles (p50=0.151, p75=0.269, p90=0.414, p95=0.532, n=4,590) set the magnitude thresholds below; and `games.conference_game` was checked as a candidate split for variant 2 and found unusable — only 49 of 4,952 games are flagged `conference_game=1`, clearly broken/near-empty for a sport where most games are conference games. That's why variant 2 splits on `|epa_diff|` magnitude instead, and it's a new, previously-undocumented data quality gap in that column, noted here rather than silently relied on.
+
+### Three variants tested
+
+1. **Damped output** (`models/variant_damped_output.py`): same fit as the baseline (identical feature, identical training rows), but any raw prediction beyond ±10 points has its excess beyond the cap halved (30 → 20). Locked: cap=10.0, shrink=0.5.
+2. **Mismatch interaction term** (`models/variant_mismatch_interaction.py`): a single 2-feature OLS fit — `(epa_diff, epa_diff × indicator[|epa_diff| > 0.30])` — giving mismatch games (top ~20% by EPA gap) a different effective slope (`epa_coef + interaction_coef`) than normal games, fit in one pass via the existing multivariate harness. Locked: threshold=0.30.
+3. **Clipped input** (`models/variant_clipped_input.py`): `epa_diff` itself is clipped to ±0.40 (≈90th percentile) before it ever reaches the OLS fit, at both training and prediction time — the fit never learns from (or extrapolates into) differences beyond the cap. Different mechanism from #1: damping changes what an unchanged fit outputs; clipping changes what the fit is allowed to learn from in the first place.
+
+### Results
+
+```
+                    BASELINE            DAMPED OUTPUT        INTERACTION TERM      CLIPPED INPUT
+edge 3-6     51.5%  (n=868)      51.8%  (n=852)       50.9%  (n=871)        51.0%  (n=873)
+edge 6-10    52.0%  (n=723)      52.5%  (n=736)       50.7%  (n=703)        49.6%  (n=707)
+edge 10+     50.7%  (n=836)      51.1%  (n=859)       52.1%  (n=819)        52.4%  (n=772)
+```
+
+| Criterion | Damped output | Interaction term | Clipped input |
+|---|---|---|---|
+| 1. McNemar p<0.05 | p=0.909 — **FAIL** | p=0.499 — **FAIL** | p=0.260 — **FAIL** |
+| 2. 10+ not the worst bucket | 51.1% < 51.8%/52.5% — **FAIL** | 52.1% ≥ 50.9%/50.7% — **PASS** | 52.4% ≥ 51.0%/49.6% — **PASS** |
+| 3. 10+ beats baseline, ≥4/5 seasons | 3/5 (2023, 2025 no) — **FAIL** | 4/5 (2023 no) — **PASS** | 3/5 (2023, 2024 no) — **FAIL** |
+| **Verdict** | **DO NOT KEEP** | **DO NOT KEEP** | **DO NOT KEEP** |
+
+**Damped output** barely moves anything: only 76 disagreement games total (damping compresses magnitude, not sign, so it rarely flips a pick), split exactly 38-38 — indistinguishable from a coin flip. It fails all three criteria outright.
+
+**Mismatch interaction term is the most interesting failure.** Its bucket table looks like a real fix — 10+ becomes the *best* bucket (52.1%), and it beats the baseline's 10+ number in 4 of 5 seasons. If the bar had been buckets-only, this would look like a win. But McNemar on the 315 disagreement games it actually produces is a near coin flip (151-164, p=0.499) — meaning the games where this variant disagrees with the baseline aren't won at a rate distinguishable from noise. The aggregate bucket improvement is consistent with games shifting between buckets (edge changes when predicted_margin changes) as much as with better picks. This is exactly why all three criteria were required together: the bucket table alone would have been misleading.
+
+**Clipped input** shows the same pattern — bucket table looks fixed (10+ becomes best at 52.4%), but McNemar (p=0.260) and season-consistency (3/5, not 4/5) both fail.
+
+### Verdict: none of the three fixes the demonstrated weakness
+
+All three rejected against the pre-registered bar, per the same discipline as §15-17 — no criterion relaxed, no bar renegotiated after seeing results. This doesn't just fail to improve the model; it specifically fails to answer the question this round of testing was built to answer (is the 10+ bucket fixable with a structural change to EPA usage, without new data). The honest answer, for these three candidates, is no.
+
+Combined with §19's finding (no edge bucket in the unmodified baseline beats breakeven either) and §15-17's three rejected feature candidates, EPA-only — in every variant tested so far, including these three structural fixes — has not demonstrated a betting edge over the market in any slice examined. That conclusion has not changed; if anything it's more load-bearing now that a plausible, mechanistically-motivated class of fixes has also come up empty.
+
+### Tests
+
+18 new unit tests (`tests/test_variant_damped_output.py`, `tests/test_variant_mismatch_interaction.py`, `tests/test_variant_clipped_input.py`) verifying each variant's feature/predict functions in isolation (boundary behavior at the cap/threshold, sign preservation, effective-slope arithmetic). `models/run_mismatch_variant_test.py` is the shared bucket-focused test runner (analogous to `run_feature_test.py` but with this round's different bar); `backtest_report.bucket_by_edge()` is the new shared bucketing helper. 138 tests pass across the whole suite.
