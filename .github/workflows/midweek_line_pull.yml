@@ -1,0 +1,46 @@
+name: Midweek Line Pull
+
+on:
+  schedule:
+    - cron: '0 17 * * 4'  # Thursday ~noon CT (17:00 UTC) -- before Thursday night games
+    - cron: '0 15 * * 6'  # Saturday ~10am CT (15:00 UTC) -- before the bulk of Saturday's slate
+  workflow_dispatch:        # lets you trigger it manually anytime
+
+permissions:
+  contents: write
+
+jobs:
+  pull-odds:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Fetch odds (line-drift snapshot -- does NOT re-run fetch_stats.py)
+        # This week's games are already in the committed data/cfb.db from
+        # Tuesday's weekly_report.yml run -- fetch_odds.py now determines
+        # week/year via fetch_stats.get_current_week() and reads `games`
+        # directly, so it doesn't need fetch_stats.py to run again here.
+        # It still needs CFBD_API_KEY because get_current_week() calls
+        # CFBD's /calendar endpoint.
+        env:
+          CFBD_API_KEY: ${{ secrets.CFBD_API_KEY }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+        run: python data/fetch_odds.py
+
+      - name: Commit updated lines
+        run: |
+          git config user.name "cfb-bot"
+          git config user.email "bot@cfb-betting-system"
+          git add data/cfb.db
+          git diff --staged --quiet || git commit -m "Midweek line pull $(date +'%Y-%m-%d %H:%M UTC')"
+          git push

@@ -1,4 +1,4 @@
-from fetch_odds import resolve_school_name
+from fetch_odds import resolve_school_name, has_games_this_week
 
 SCHOOLS = [
     "TCU", "USC", "NC State", "Ohio", "Ohio State", "Miami", "Miami (OH)",
@@ -60,3 +60,35 @@ def test_alias_not_used_if_canonical_name_missing_from_schools():
     # fall through to normal matching (which will also fail here, so return unchanged).
     schools_without_umass = [s for s in SCHOOLS if s != "Massachusetts"]
     assert resolve_school_name(schools_without_umass, "UMass Minutemen") == "UMass Minutemen"
+
+
+# ---------------------------------------------------------------------------
+# has_games_this_week -- replaces the old ephemeral data/stats/week_*.json
+# read, which never survived a GitHub Actions checkout (see module docstring)
+# ---------------------------------------------------------------------------
+
+def test_has_games_this_week_true_when_games_exist(temp_db):
+    conn = temp_db.get_connection()
+    conn.execute(
+        "INSERT INTO games (game_id, season, week, home_team, away_team) VALUES (1, 2026, 3, 'A', 'B')"
+    )
+    conn.commit()
+    assert has_games_this_week(conn, 2026, 3) is True
+    conn.close()
+
+
+def test_has_games_this_week_false_when_no_games(temp_db):
+    conn = temp_db.get_connection()
+    assert has_games_this_week(conn, 2026, 3) is False
+    conn.close()
+
+
+def test_has_games_this_week_is_specific_to_season_and_week(temp_db):
+    conn = temp_db.get_connection()
+    conn.execute(
+        "INSERT INTO games (game_id, season, week, home_team, away_team) VALUES (1, 2026, 3, 'A', 'B')"
+    )
+    conn.commit()
+    assert has_games_this_week(conn, 2026, 4) is False  # different week
+    assert has_games_this_week(conn, 2025, 3) is False  # different season
+    conn.close()

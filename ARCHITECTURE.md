@@ -712,3 +712,37 @@ Combined with §19's finding (no edge bucket in the unmodified baseline beats br
 ### Tests
 
 18 new unit tests (`tests/test_variant_damped_output.py`, `tests/test_variant_mismatch_interaction.py`, `tests/test_variant_clipped_input.py`) verifying each variant's feature/predict functions in isolation (boundary behavior at the cap/threshold, sign preservation, effective-slope arithmetic). `models/run_mismatch_variant_test.py` is the shared bucket-focused test runner (analogous to `run_feature_test.py` but with this round's different bar); `backtest_report.bucket_by_edge()` is the new shared bucketing helper. 138 tests pass across the whole suite.
+
+Model search closed as of this entry: three rejected features (§15-17) plus three rejected structural fixes for the one demonstrated weakness (this section) is six honest rejections. EPA-only stands as the floor for forced contest picks — nothing more is being attempted on the model itself.
+
+## 21. Line-drift tooling: gambling view + pool view (2026-08-01)
+
+Two separate consumers need line movement, with different baselines: the user's own gambling (separate from the pick'em pool) wants opening-vs-latest market movement; the pick'em pool wants live-vs-the-number-they-actually-entered, since picks can still be edited after the pool's own sheet locks a number. Built both as thin, model-free reporting views over the same underlying line data — explicitly NOT surfacing the EPA-only model here, since it has no demonstrated edge (§19-20): these views report what the *market* has done, not what the model recommends.
+
+### Same-book verification, before wiring anything further
+
+The whole design depends on comparing a game's opener to a LATER number from the *same* book (`line_utils.get_latest_line(..., prefer_book=...)`) — comparing across books would show apparent "drift" that's really just two books disagreeing, not real movement. Checked live before wiring the rest: ran the gambling view's opening/latest matching across every graded season (2021-2025, 3,721 games total). **`same_book_match` was `True` in every single case — 0% fallback.** Whichever book has a game's opener also has its closer, with no exceptions in the historical archive. Cross-book noise is not a real risk here; no extra handling (dropping fallback games, etc.) was needed.
+
+### Shared infrastructure
+
+`line_utils.py`: `list_all_games()`/`get_latest_line()` moved out of `card_generator.py` (which now imports them unchanged) once a second and third consumer needed the identical logic — same pattern as `backtest_report.py`. `get_latest_line()` gained an optional `prefer_book` parameter: tries that exact book across `current`/`closing` first, only falling back to consensus/any-book if that book has nothing later.
+
+### Gambling view (`models/gambling_view.py`)
+
+For every lined game in a (season, week): opening line vs. latest line from the same book, `movement`/`direction`/`magnitude`, plus `same_book_match` shown explicitly (even though it's never `False` in the historical data, a live-season fallback is still possible and must stay visible, not silently substituted). Sorted by magnitude, descending. No `predicted_margin`/`side`/`edge`/`confidence` field anywhere in the module — enforced by a test that greps the source for those keys.
+
+### Pool view (`models/pool_view.py`)
+
+Takes a list of `{game_id, home_team, away_team, pool_home_spread, picked_side}` dicts (or loads them from a CSV via `load_pool_entries()` — columns: `game_id,home_team,away_team,pool_home_spread,picked_side`, no team-name resolution needed since the user enters the CFBD `game_id` directly rather than free-text names). Reports live line vs. pool line, drift reframed relative to the picked side (`toward_pick`/`away_from_pick`/`flat`, not raw home/away), and `favorite_flipped` (the market's implied favorite differs from the pool line's). Sorted worst-for-the-pick first. Same no-model-fields guarantee as the gambling view.
+
+### Wired: Thursday/Saturday odds pulls
+
+New `.github/workflows/midweek_line_pull.yml`: Thursday ~noon CT and Saturday ~10am CT (in addition to the existing Tuesday pull in `weekly_report.yml`), `workflow_dispatch` for manual runs. Deliberately does NOT re-run `fetch_stats.py` — this week's games are already in the committed `data/cfb.db` from Tuesday's run, and `fetch_odds.py` no longer needs fetch_stats's output file (see next).
+
+### Fixed: `fetch_odds.py`'s ephemeral-file dependency
+
+Previously `main()` determined week/year by reading the latest `data/stats/week_*.json` file `fetch_stats.py` had just written — fine for a single Tuesday run in the same job, but that directory is gitignored and never survives a GitHub Actions checkout, so a Thursday/Saturday-only run (no `fetch_stats.py` step) would have failed immediately with "No stats files found." Now calls `fetch_stats.get_current_week()` directly and checks `games` in the DB for `has_games_this_week()` instead of reading `meta.get("offseason")` — both come from the persistent, already-committed `data/cfb.db`, so the script has no dependency on what ran earlier in the same job. The midweek workflow does need `CFBD_API_KEY` now too (get_current_week() calls CFBD's `/calendar`), not just `ODDS_API_KEY`.
+
+### Tests
+
+25 new tests (`tests/test_line_utils.py`, `tests/test_gambling_view.py`, `tests/test_pool_view.py` — 22 collectively, including the CSV-loading tests — plus 3 added to `tests/test_fetch_odds.py` for `has_games_this_week`). 163 tests pass across the whole suite.

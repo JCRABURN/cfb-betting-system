@@ -19,15 +19,20 @@ a backtest answer different questions:
 
 1. Games are NOT filtered to completed=1 (backtest_harness.list_games()
    only grades finished games; a card is for games that haven't been played
-   yet). See list_all_games() below.
+   yet). See line_utils.list_all_games().
 2. Edge is computed against the LATEST available line, not the opening line
-   (get_latest_line() below), because a card informs a bet placed NOW,
+   (line_utils.get_latest_line()), because a card informs a bet placed NOW,
    against today's number -- not a backtest's fixed historical entry point.
    The live in-season path (fetch_odds.py) writes line_type='current' for
    this; the historical archive instead uses 'closing' for the same concept
    (confirmed live: 2024 week 10 has 0 'current' rows, only 'opening' and
    'closing') -- get_latest_line() tries both so this one function works
    unmodified against either data source.
+
+list_all_games()/get_latest_line() now live in line_utils.py, shared with
+the two drift views (gambling_view.py, pool_view.py) that also need "every
+game this week" and "the latest line for a game" -- pulled out once a
+second consumer needed the identical logic.
 
 No "top 5 by edge" here anymore. The first version of this generator ranked
 games by raw edge size on the assumption that a bigger gap between the
@@ -58,46 +63,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import db
 import backtest_harness as bh
 import baseline_epa as epa
-
-
-def list_all_games(conn, season, week):
-    """Every FBS game scheduled for (season, week), regardless of whether
-    it's been played yet -- unlike backtest_harness.list_games(), which
-    intentionally only returns completed games (correct for grading, wrong
-    for a card: an upcoming game is exactly what a card exists to cover)."""
-    return conn.execute(
-        "SELECT game_id, home_team, away_team, start_date FROM games "
-        "WHERE season = ? AND week = ? ORDER BY game_id",
-        (season, week),
-    ).fetchall()
-
-
-def get_latest_line(conn, game_id):
-    """The most recent available market line for a game: 'current' if the
-    live in-season path has written one, else 'closing' (the historical
-    archive's term for the same concept -- the last number seen before
-    kickoff). Same consensus-then-any-book fallback as
-    backtest_harness.get_opening_line()/get_closing_line(), tried across
-    both line_type values in turn. Returns None if neither exists (not
-    lined yet, or a team-name join failure left the row unreachable)."""
-    for line_type in ("current", "closing"):
-        row = conn.execute(
-            "SELECT home_spread, total FROM betting_lines "
-            "WHERE game_id = ? AND line_type = ? AND book = 'consensus'",
-            (game_id, line_type),
-        ).fetchone()
-        if row is not None and row[0] is not None:
-            return {"home_spread": row[0], "total": row[1], "book": "consensus", "line_type": line_type}
-
-        row = conn.execute(
-            "SELECT home_spread, total, book FROM betting_lines "
-            "WHERE game_id = ? AND line_type = ? AND home_spread IS NOT NULL "
-            "ORDER BY book LIMIT 1",
-            (game_id, line_type),
-        ).fetchone()
-        if row is not None:
-            return {"home_spread": row[0], "total": row[1], "book": row[2], "line_type": line_type}
-    return None
+from line_utils import list_all_games, get_latest_line
 
 
 # The one bucket boundary the 2021-2025 edge-bucket backtest actually

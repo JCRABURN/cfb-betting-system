@@ -2,6 +2,19 @@
 fetch_odds.py
 Pulls current spreads, line movement, and juice from The Odds API.
 Stores opening and current lines for CLV tracking.
+
+Runs more than once a week now (see .github/workflows/midweek_line_pull.yml
+-- Thursday/Saturday, in addition to the original Tuesday pull), which is
+what the gambling/pool drift views (models/gambling_view.py,
+models/pool_view.py) need: a later same-book number to compare an opener
+against. Week/year detection used to read the latest data/stats/week_*.json
+file fetch_stats.py had just written -- but that directory is gitignored
+and never survives a GitHub Actions checkout, so a Thursday/Saturday run
+(which does NOT re-run fetch_stats.py -- no need to, this week's games are
+already in the committed data/cfb.db from Tuesday) would always fail with
+"No stats files found." Now calls fetch_stats.get_current_week() directly
+and checks the DB for this week's games, so it has no dependency on
+whether fetch_stats.py ran earlier in the SAME job.
 """
 
 import os
@@ -13,6 +26,7 @@ from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import db
+import fetch_stats
 
 ODDS_API_KEY = os.environ.get("ODDS_API_KEY", "")
 ODDS_BASE = "https://api.the-odds-api.com/v4"
@@ -271,28 +285,29 @@ def persist_lines_to_db(games_list, week, year, line_type):
     return rows_added
 
 
+def has_games_this_week(conn, season, week):
+    """Whether the DB already has any game row for (season, week) --
+    fetch_stats.py's run (Tuesday or otherwise) persists games as soon as
+    it fetches them, so this is available without re-running it, as long
+    as SOME earlier run this week already populated `games`."""
+    return conn.execute(
+        "SELECT 1 FROM games WHERE season = ? AND week = ? LIMIT 1", (season, week),
+    ).fetchone() is not None
+
+
 def main():
     with db.log_run("odds_api") as run:
-        # Get week from stats file (must run after fetch_stats.py)
-        import glob
-        stats_files = glob.glob("data/stats/week_*.json")
-        if not stats_files:
-            print("No stats files found. Run fetch_stats.py first.")
-            return
+        week, year = fetch_stats.get_current_week()
 
-        # Filenames aren't zero-padded (week_10_2026.json vs week_2_2026.json),
-        # so sorting the paths as strings picks week 2 over week 10. Load each
-        # file's own (year, week) fields and compare those as integers instead.
-        metas = []
-        for path in stats_files:
-            with open(path, encoding="utf-8") as f:
-                metas.append(json.load(f))
-        meta = max(metas, key=lambda m: (m["year"], m["week"]))
-        week = meta["week"]
-        year = meta["year"]
+        conn = db.get_connection()
+        try:
+            has_games = has_games_this_week(conn, year, week)
+        finally:
+            conn.close()
 
-        if meta.get("offseason"):
-            print("Offseason mode — no odds to fetch. Saving empty placeholders.")
+        if not has_games:
+            print(f"No games in the DB for Week {week}, {year} — likely offseason "
+                  f"(or fetch_stats.py hasn't run yet this week). Saving empty placeholders.")
             save_lines([], week, year, label="opening")
             save_lines([], week, year, label="current")
             return

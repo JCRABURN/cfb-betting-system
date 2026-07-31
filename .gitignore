@@ -67,6 +67,8 @@ data/stats/
 data/spreads/
 data/analysis/
 data/cards/
+data/line_views/
+data/pool_picks/
 
 # Flask stuff:
 instance/
