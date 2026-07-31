@@ -1,11 +1,12 @@
 """
 card_generator.py
 Builds the weekly card: every lined FBS game for one (season, week), with
-the EPA-only model's predicted side, edge (points), and an edge-ranked
-confidence tier (1-5) -- plus the top 5 games by edge. This is the single
-shared output both eventual contest consumers (SplashSports, pick'em pool)
-will read from later; it does not encode either contest's own rules (entry
-format, scoring, unit sizing) -- just the model's view of every game.
+the EPA-only model's predicted side, edge (points), and a confidence flag
+(see _assign_confidence below -- NOT a graduated ranking by edge size, see
+why). This is the single shared output both eventual contest consumers
+(SplashSports, pick'em pool) will read from later; it does not encode
+either contest's own rules (entry format, scoring, unit sizing) -- just the
+model's view of every game.
 
 Reuses the SAME fitted model as the validated backtest (backtest_harness.py
 + baseline_epa.py) -- intercept+coefficient fit via OLS on seasons strictly
@@ -28,11 +29,26 @@ a backtest answer different questions:
    'closing') -- get_latest_line() tries both so this one function works
    unmodified against either data source.
 
+No "top 5 by edge" here anymore. The first version of this generator ranked
+games by raw edge size on the assumption that a bigger gap between the
+model and the market meant a stronger pick. A dedicated backtest check
+(bucketing the 2021-2025 edge>=3 bet-subset by edge size) disproved that:
+no bucket reliably beats the ~52.4% breakeven line, and the biggest-edge
+bucket (10+, 50.7% ATS, 2 of 5 seasons below 50%) is the WORST of the
+three, not the best -- consistent with large predicted margins coming from
+extrapolation in lopsided games, where a single-feature linear model is
+least calibrated. Ranking by edge was therefore backwards: it surfaced the
+model's least reliable picks as its most confident ones. See
+_assign_confidence()'s docstring for the fix and ARCHITECTURE.md §19 for
+the full bucket data.
+
 IMPORTANT: testing this against a historical week only validates the CARD
-LOGIC (format, that confidence tracks edge, that ranking is correct) against
-known data. It does NOT make a current-season card trustworthy -- that
-still depends on the live weekly fetch path (see ARCHITECTURE.md §18's
-Week 0/1 verification items), which is a separate, not-yet-verified concern.
+LOGIC (format, that missing data is skipped not crashed, that the flag
+matches the edge threshold) against known data. It does NOT make a
+current-season card trustworthy -- that still depends on the live weekly
+fetch path (see ARCHITECTURE.md §18's Week 0/1 verification items), which
+is a separate, not-yet-verified concern. Nor does it mean the MODEL is
+ready to run in either contest -- see ARCHITECTURE.md §19's bottom line.
 """
 
 import os
@@ -84,26 +100,47 @@ def get_latest_line(conn, game_id):
     return None
 
 
+# The one bucket boundary the 2021-2025 edge-bucket backtest actually
+# supports: edge >= 10 is the demonstrably WORST-performing slice (50.7%
+# ATS aggregate, below 50% in 2 of 5 seasons) -- not a threshold picked to
+# produce a nice-looking split. See ARCHITECTURE.md §19.
+LARGE_EDGE_LOW_CONFIDENCE_THRESHOLD = 10.0
+
+
 def _assign_confidence(entries):
-    """Edge-ranked confidence: sort by edge descending, split into quintiles
-    by RANK POSITION within this week's own slate -- not a fixed point
-    threshold. Adapts to each week's actual edge distribution instead of
-    hardcoding magnitude cutoffs that were never validated (unlike the
-    pre-EPA-only spread_model.py's tiered unit-sizing, deliberately not
-    reused here). Tie-broken by game_id for determinism. Mutates and
-    returns `entries`, now sorted."""
-    entries.sort(key=lambda e: (-e["edge"], e["game_id"]))
-    n = len(entries)
-    for i, entry in enumerate(entries):
-        entry["confidence"] = 5 - min(4, (i * 5) // n)
+    """No graduated ranking by edge size. The backtest showed none of the
+    3-6 / 6-10 / 10+ edge buckets reliably beats breakeven, and the gap
+    between the two smaller buckets (51.5% vs 52.0%) is noise-level, not a
+    validated difference -- inventing a 5-tier scale out of that would just
+    be a different way of pretending edge size means something it doesn't.
+    Capping/normalizing edge to rescue a ranking was considered and
+    rejected for the same reason: it would be engineering around a model
+    that hasn't demonstrated an edge signal, not fixing a bug.
+
+    What the backtest DOES support is a negative signal: edge >= 10 is the
+    one bucket shown to underperform the other two, plausibly because it's
+    where the linear model is extrapolating hardest (large predicted
+    margins in lopsided games). So every game gets "standard" except that
+    one flagged bucket, which gets "low_confidence_large_edge" -- the
+    opposite of what the original rank-by-edge scheme did with these same
+    games. Does NOT reorder `entries` -- edge size is not a quality
+    ranking, so there's nothing to sort by."""
+    for entry in entries:
+        entry["confidence"] = (
+            "low_confidence_large_edge"
+            if entry["edge"] >= LARGE_EDGE_LOW_CONFIDENCE_THRESHOLD
+            else "standard"
+        )
     return entries
 
 
 def build_card(conn, season, week):
     """Returns the full card for one (season, week): every lined game with
-    side/edge/confidence, the top 5 by edge, and a `skipped` list (games
-    with no point-in-time stats yet, or no line yet) so gaps are visible
-    rather than silently dropped."""
+    side/edge/confidence (in game_id order -- not ranked by edge, see
+    _assign_confidence), a `flagged_large_edge` list surfacing which games
+    hit the low-confidence threshold (informational, not a "top picks"
+    list), and a `skipped` list (games with no point-in-time stats yet, or
+    no line yet) so gaps are visible rather than silently dropped."""
     all_prior = bh.available_seasons_before(conn, season)
     rows, ys = bh.build_training_set(conn, epa.epa_differential, all_prior)
     intercept, coefs = bh.fit_multilinear(rows, ys)
@@ -159,7 +196,7 @@ def build_card(conn, season, week):
         "intercept": round(intercept, 4),
         "coefficient": round(coefs[0], 4),
         "games": entries,
-        "top5": entries[:5],
+        "flagged_large_edge": [e for e in entries if e["confidence"] == "low_confidence_large_edge"],
         "skipped": skipped,
     }
 
@@ -184,7 +221,8 @@ def main():
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(card, f, indent=2)
 
-    print(f"Season {args.season} Week {args.week}: {len(card['games'])} lined games, "
+    print(f"Season {args.season} Week {args.week}: {len(card['games'])} lined games "
+          f"({len(card['flagged_large_edge'])} flagged low_confidence_large_edge), "
           f"{len(card['skipped'])} skipped. Saved to {out_path}")
 
 

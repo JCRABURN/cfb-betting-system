@@ -136,7 +136,10 @@ def test_missing_stats_and_missing_line_are_skipped_not_crashed(temp_db):
     assert skipped_by_id[14] == "no_line"
 
 
-def test_confidence_tracks_edge_size_and_ranking_is_correct(temp_db):
+def test_confidence_is_standard_for_moderate_edges_and_not_edge_ranked(temp_db):
+    """None of these three games reach the low-confidence threshold (edge
+    7.0, 3.5, 2.5, all < 10) -- all should be "standard", and the list
+    should stay in game_id order, not get reordered by edge size."""
     conn = temp_db.get_connection()
     build_training_fixture(conn)
     build_target_week_fixture(conn)
@@ -146,27 +149,28 @@ def test_confidence_tracks_edge_size_and_ranking_is_correct(temp_db):
     conn.close()
 
     games = card["games"]
-    edges = [g["edge"] for g in games]
-    assert edges == sorted(edges, reverse=True), "games must be ranked by edge, descending"
-
-    confidences = [g["confidence"] for g in games]
-    assert confidences == sorted(confidences, reverse=True), \
-        "confidence must be non-increasing as edge decreases"
-    # Exact tiers for a 3-game slate: rank 0 -> 5, rank 1 -> 4, rank 2 -> 2
-    assert confidences == [5, 4, 2]
-
-    assert card["top5"] == games[:5]
-    assert len(card["top5"]) == 3  # fewer than 5 lined games this week
+    assert [g["game_id"] for g in games] == [10, 11, 12]  # game_id order, not edge order
+    assert [g["confidence"] for g in games] == ["standard", "standard", "standard"]
+    assert card["flagged_large_edge"] == []
+    assert "top5" not in card
 
 
-def test_top5_truncates_to_five_on_a_larger_slate(temp_db):
+def test_large_edge_games_are_flagged_low_confidence_not_high(temp_db):
+    """The backtest showed edge >= 10 is the WORST-performing bucket, not
+    the best -- these games must be flagged low_confidence_large_edge, and
+    must NOT be surfaced as some kind of "top pick" list."""
     conn = temp_db.get_connection()
     build_training_fixture(conn)
     build_target_week_fixture(conn)
 
-    # Add 4 more lined, distinctly-edged games so the slate exceeds 5.
+    # Four more lined games: predicted margins of 20.0, -19.0, 3.1, 33.0
+    # against these market spreads give edges of 15.0, 14.0, 2.1, 25.0 --
+    # three cross the >= 10 flag threshold, one doesn't.
     for i, (team_off, team2_off, spread) in enumerate([
-        (0.40, 0.10, -5.0), (0.10, 0.40, 5.0), (0.02, -0.02, -1.0), (0.25, -0.25, -8.0),
+        (0.40, 0.10, -5.0),   # edge 15.0 -> flagged
+        (0.10, 0.40, 5.0),    # edge 14.0 -> flagged
+        (0.02, -0.02, -1.0),  # edge 2.1  -> standard
+        (0.25, -0.25, -8.0),  # edge 25.0 -> flagged
     ], start=1):
         home, away = f"M{i}", f"N{i}"
         insert_stats(conn, 2023, 4, home, team_off, 0.0)
@@ -178,11 +182,40 @@ def test_top5_truncates_to_five_on_a_larger_slate(temp_db):
     card = cg.build_card(conn, 2023, 5)
     conn.close()
 
-    assert len(card["games"]) == 7  # original 3 + 4 new
-    assert len(card["top5"]) == 5
-    assert card["top5"] == card["games"][:5]
-    top5_edges = [g["edge"] for g in card["top5"]]
-    assert top5_edges == sorted(top5_edges, reverse=True)
+    by_id = {g["game_id"]: g for g in card["games"]}
+    assert by_id[21]["edge"] == 15.0 and by_id[21]["confidence"] == "low_confidence_large_edge"
+    assert by_id[22]["edge"] == 14.0 and by_id[22]["confidence"] == "low_confidence_large_edge"
+    assert by_id[23]["edge"] == 2.1 and by_id[23]["confidence"] == "standard"
+    assert by_id[24]["edge"] == 25.0 and by_id[24]["confidence"] == "low_confidence_large_edge"
+
+    flagged_ids = {g["game_id"] for g in card["flagged_large_edge"]}
+    assert flagged_ids == {21, 22, 24}
+
+
+def test_edge_exactly_at_threshold_is_flagged_inclusive(temp_db):
+    conn = temp_db.get_connection()
+    insert_stats(conn, 2022, 1, "A", 0.2, 0.0)
+    insert_stats(conn, 2022, 1, "B", -0.1, 0.0)
+    insert_stats(conn, 2022, 1, "C", 0.05, 0.0)
+    insert_stats(conn, 2022, 1, "D", -0.05, 0.0)
+    insert_game(conn, 1, 2022, 2, "A", "B", home_pts=30, away_pts=10, completed=1)
+    insert_game(conn, 2, 2022, 2, "C", "D", home_pts=24, away_pts=17, completed=1)
+
+    # Same fit as build_training_fixture: intercept=0.5, coef=65.0.
+    # predicted margin for E(net .1)/F(net .0): 0.5 + 65*0.1 = 7.0.
+    # Market home_spread=3.0 -> market home margin=-3.0 -> edge = 7.0-(-3.0)=10.0 exactly.
+    insert_stats(conn, 2023, 4, "E", 0.10, 0.0)
+    insert_stats(conn, 2023, 4, "F", 0.00, 0.0)
+    insert_game(conn, 10, 2023, 5, "E", "F", completed=0)
+    insert_line(conn, 10, 2023, 5, "E", "F", home_spread=3.0, line_type="current")
+    conn.commit()
+
+    card = cg.build_card(conn, 2023, 5)
+    conn.close()
+
+    game = card["games"][0]
+    assert game["edge"] == 10.0
+    assert game["confidence"] == "low_confidence_large_edge"
 
 
 def test_list_all_games_includes_not_yet_completed_games(temp_db):

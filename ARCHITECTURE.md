@@ -620,3 +620,43 @@ EPA-only is the model (three feature candidates tested and rejected, §15-17). B
 ### Tests
 
 110 tests pass (no new tests added — these are hardening fixes to orchestration code that was never exercised as written, not new behavior with its own test surface; the existing `tests/test_fetch_odds.py` suite already covers the functions touched).
+
+## 19. Card generator, and the edge-bucket check that disproved its first confidence design (2026-08-01)
+
+Built `models/card_generator.py`: the shared weekly-card output (every lined game, model-predicted side, edge, confidence) that both eventual contest consumers (SplashSports, pick'em pool) will read from. Reuses the validated EPA-only walk-forward model exactly (`backtest_harness.py` + `baseline_epa.py`) — no new fitting logic. Two departures from the backtest harness, since a card and a backtest answer different questions: games aren't filtered to `completed=1` (a card covers games not yet played), and edge is computed against the latest available line (`current`, falling back to `closing` for the historical archive's vocabulary) rather than the opening line the backtest uses for grading integrity. Verified against 2024 week 10 (48 games, 0 skipped) — this validates card *logic* against known data, not current-season trustworthiness (still gated on §18's Week 0/1 items).
+
+**The first version ranked confidence by raw edge size** (quintiles of the week's own edge distribution, biggest edge = confidence 5). That encodes an assumption — bigger model/market disagreement = stronger pick — that had never actually been tested.
+
+### The check: bucket the bet-subset by edge size, 2021-2025
+
+Reused `run_walk_forward` (same EPA-only fit, same 2021-2025 graded seasons) to bucket the existing `edge >= 3.0` bet-subset (2,427 picks) into 3-6 / 6-10 / 10+ point buckets and compare ATS%:
+
+```
+edge 3-6    n=868   W-L-P 437-412-19   ATS 51.5%   ROI -1.7%
+edge 6-10   n=723   W-L-P 368-340-15   ATS 52.0%   ROI -0.8%
+edge 10+    n=836   W-L-P 419-408-9    ATS 50.7%   ROI -3.2%
+```
+
+Aggregate across all three (1224-1160 decided, 51.3%) matches the previously-reported bet-subset number exactly — same data, no new bug. Per-season breakdown, checking for a hidden hot/cold cell (the same trap the `edge>=3` threshold itself fell into originally):
+
+| Season | 3-6 | 6-10 | 10+ |
+|---|---|---|---|
+| 2021 | 50.6% | 50.7% | 46.6% |
+| 2022 | 55.3% | 53.3% | 49.4% |
+| 2023 | 46.6% | 52.8% | 52.2% |
+| 2024 | 52.5% | 60.7% | 53.3% |
+| 2025 | 52.2% | 41.5% | 52.4% |
+
+**Result: no bucket reliably beats the ~52.4% breakeven line, and edge magnitude does not predict hit rate.** The middle bucket (6-10) has the best aggregate number, but it's mostly one hot season (2024, 60.7%) offset by one cold one (2025, 41.5%) — high variance, not a stable edge. The 10+ bucket — the biggest, most eye-catching edges, like the Massachusetts +22 pick that led off the first sample card — is the *worst* of the three in aggregate and sits below 50% in 2 of 5 seasons. Ranking confidence by raw edge was therefore backwards: it surfaced the model's least reliable picks as its most confident ones.
+
+### The fix: no graduated ranking; one negative flag, not five positive tiers
+
+Capping or normalizing edge to rescue a 1-5 ranking was considered and rejected — that would be engineering around a model that hasn't demonstrated an edge signal, not fixing a bug. Since neither remaining distinction (3-6 vs 6-10, 51.5% vs 52.0%) is big enough to trust over season-to-season noise, there's no basis for a positive graduated scale at all. The only thing the data supports is the one negative signal: edge >= 10 is the demonstrably worst bucket. `_assign_confidence()` now assigns exactly two states — `"standard"`, or `"low_confidence_large_edge"` for edge >= 10 (the exact bucket boundary already tested, not a new number) — and does **not** reorder games by edge, since edge size is not a quality ranking. `build_card()`'s `top5` key is gone entirely (it was the same "biggest edge = best" framing in a different field); a `flagged_large_edge` list surfaces which games hit the low-confidence threshold, purely as a transparency flag, not a "top picks" list. Re-verified against 2024 week 10: the Massachusetts @ Mississippi State game (edge 22.0) that led the old top-5 is now correctly flagged `low_confidence_large_edge`, alongside 4 other games; 43 of 48 games are `"standard"`.
+
+### Bottom line on the model itself
+
+Every honest slice of this backtest — all-predictions (51.1%), the edge>=3 bet-subset (51.3%), and now every edge bucket within that subset (51.5% / 52.0% / 50.7%) — sits at or below the 52.4% breakeven line, with no slice showing a stable, season-consistent edge. Three independent candidate features (success rate, havoc rate, rest/schedule — §15-17) were tested against a pre-registered bar specifically to find something EPA doesn't already know, and all three were rejected. **EPA-only has not demonstrated a betting edge over the closing line, and the feature search that came up empty three times running was not optional groundwork — it was the actual test of whether this model has anything real to contribute.** The infrastructure (data pipeline, walk-forward harness, live-path hardening, card generator) is solid and reusable, but the model itself is not validated for use in either contest as of this entry. Running it now would mean staking real contest entries on a model indistinguishable from a coin flip against the market, which is exactly the outcome the backtest discipline in this project exists to catch before it happens, not after.
+
+### Tests
+
+10 new/updated tests in `tests/test_card_generator.py` for the confidence redesign (exact-threshold boundary, flagged-list contents, no reordering). 120 tests pass across the whole suite.
