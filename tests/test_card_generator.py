@@ -284,3 +284,64 @@ def test_get_latest_line_returns_none_when_no_line_exists(temp_db):
     conn.close()
 
     assert line is None
+
+
+# ---------------------------------------------------------------------------
+# persist_picks_to_db -- pending picks for post_game_audit.py to grade later
+# ---------------------------------------------------------------------------
+
+def test_persist_picks_to_db_inserts_one_row_per_game(temp_db):
+    conn = temp_db.get_connection()
+    build_training_fixture(conn)
+    build_target_week_fixture(conn)
+    conn.commit()
+
+    card = cg.build_card(conn, 2023, 5)
+    rows_added = cg.persist_picks_to_db(conn, card)
+
+    assert rows_added == len(card["games"]) == 3
+    stored = conn.execute("SELECT COUNT(*) FROM picks WHERE pick_type = 'live'").fetchone()[0]
+    conn.close()
+    assert stored == 3
+
+
+def test_persist_picks_to_db_stores_correct_fields(temp_db):
+    conn = temp_db.get_connection()
+    build_training_fixture(conn)
+    build_target_week_fixture(conn)
+    conn.commit()
+
+    card = cg.build_card(conn, 2023, 5)
+    cg.persist_picks_to_db(conn, card)
+
+    g10 = next(g for g in card["games"] if g["game_id"] == 10)
+    row = conn.execute(
+        "SELECT week, year, home_team, away_team, consensus_spread, projected_spread, "
+        "edge, recommended_side, status, pick_type, confidence_signals FROM picks WHERE game_id = 10"
+    ).fetchone()
+    conn.close()
+
+    assert row == (
+        5, 2023, "E", "F", g10["market_home_spread"], g10["predicted_home_margin"],
+        g10["edge"], g10["side"], "pending", "live", '["standard"]',
+    )
+
+
+def test_persist_picks_to_db_is_idempotent(temp_db):
+    """Re-running the card generator mid-week must not duplicate picks for
+    games it already recorded."""
+    conn = temp_db.get_connection()
+    build_training_fixture(conn)
+    build_target_week_fixture(conn)
+    conn.commit()
+
+    card = cg.build_card(conn, 2023, 5)
+    first = cg.persist_picks_to_db(conn, card)
+    second = cg.persist_picks_to_db(conn, card)
+
+    total = conn.execute("SELECT COUNT(*) FROM picks WHERE pick_type = 'live'").fetchone()[0]
+    conn.close()
+
+    assert first == 3
+    assert second == 0
+    assert total == 3

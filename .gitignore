@@ -68,7 +68,10 @@ data/spreads/
 data/analysis/
 data/cards/
 data/line_views/
-data/pool_picks/
+
+# data/pool_picks/ is deliberately NOT ignored -- the user's weekly pool-picks
+# CSV (models/pool_view.py) must be committed so the automated Thursday/
+# Saturday odds-pull workflow can read it from a fresh checkout.
 
 # Flask stuff:
 instance/

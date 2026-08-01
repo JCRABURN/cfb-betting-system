@@ -59,8 +59,11 @@ ready to run in either contest -- see ARCHITECTURE.md §19's bottom line.
 import os
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _ROOT)
+sys.path.insert(0, os.path.join(_ROOT, "data"))
 import db
+import fetch_stats
 import backtest_harness as bh
 import baseline_epa as epa
 from line_utils import list_all_games, get_latest_line
@@ -167,29 +170,86 @@ def build_card(conn, season, week):
     }
 
 
+def persist_picks_to_db(conn, card):
+    """Insert a pending `picks` row per card game, for post_game_audit.py to
+    grade once the week's games finish. Idempotent: skips any game that
+    already has a pick_type='live' row (pending or settled) for this
+    game_id, so re-running the card generator mid-week doesn't duplicate.
+
+    Reuses the existing `picks` table (designed for the pre-EPA-only
+    weighted model) pragmatically rather than migrating the schema:
+    consensus_spread <- market_home_spread, projected_spread <-
+    predicted_home_margin, recommended_side <- side, and the new
+    confidence flag is stored in confidence_signals (declared as a
+    JSON-encoded list; holds a 1-item list here, e.g. ["standard"]).
+    units/key_factors/weather/risk_flags/qualifies don't apply to this
+    model and are left at their inapplicable defaults (0/empty/NULL/False)
+    rather than populated with invented values."""
+    import json
+    from datetime import datetime
+
+    now = datetime.utcnow().isoformat()
+    rows_added = 0
+    for game in card["games"]:
+        exists = conn.execute(
+            "SELECT 1 FROM picks WHERE game_id = ? AND pick_type = 'live'",
+            (game["game_id"],),
+        ).fetchone()
+        if exists:
+            continue
+        conn.execute(
+            """
+            INSERT INTO picks (
+                game_id, week, year, home_team, away_team,
+                consensus_spread, projected_spread, edge, recommended_side,
+                units, confidence_signals, key_factors, line_movement, weather,
+                risk_flags, qualifies, status, pick_type, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, '[]', NULL, '{}', '[]', 0, 'pending', 'live', ?)
+            """,
+            (
+                game["game_id"], card["week"], card["season"],
+                game["home_team"], game["away_team"],
+                game["market_home_spread"], game["predicted_home_margin"], game["edge"],
+                game["side"], json.dumps([game["confidence"]]), now,
+            ),
+        )
+        rows_added += 1
+    conn.commit()
+    return rows_added
+
+
 def main():
     import argparse
     import json
 
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--season", type=int, required=True)
-    parser.add_argument("--week", type=int, required=True)
+    parser.add_argument("--season", type=int, default=None,
+                         help="Defaults to the current week's season via fetch_stats.get_current_week()")
+    parser.add_argument("--week", type=int, default=None,
+                         help="Defaults to the current week via fetch_stats.get_current_week()")
     args = parser.parse_args()
 
-    conn = db.get_connection()
-    try:
-        card = build_card(conn, args.season, args.week)
-    finally:
-        conn.close()
+    with db.log_run("card_generator") as run:
+        season, week = args.season, args.week
+        if season is None or week is None:
+            week, season = fetch_stats.get_current_week()
 
-    os.makedirs("data/cards", exist_ok=True)
-    out_path = f"data/cards/week_{args.week}_{args.season}.json"
-    with open(out_path, "w", encoding="utf-8") as f:
-        json.dump(card, f, indent=2)
+        conn = db.get_connection()
+        try:
+            card = build_card(conn, season, week)
+            run["rows_added"] = persist_picks_to_db(conn, card)
+        finally:
+            conn.close()
 
-    print(f"Season {args.season} Week {args.week}: {len(card['games'])} lined games "
-          f"({len(card['flagged_large_edge'])} flagged low_confidence_large_edge), "
-          f"{len(card['skipped'])} skipped. Saved to {out_path}")
+        os.makedirs("data/cards", exist_ok=True)
+        out_path = f"data/cards/week_{week}_{season}.json"
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(card, f, indent=2)
+
+        print(f"Season {season} Week {week}: {len(card['games'])} lined games "
+              f"({len(card['flagged_large_edge'])} flagged low_confidence_large_edge), "
+              f"{len(card['skipped'])} skipped, {run['rows_added']} new picks persisted. "
+              f"Saved to {out_path}")
 
 
 if __name__ == "__main__":

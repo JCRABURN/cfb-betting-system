@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CFB Line &amp; Pool Monitor</title>
+<style>
+:root {
+  --ink: #12181a; --ink-soft: #3a4245; --chalk: #e7e9e2; --panel: #ffffff;
+  --line: rgba(18, 24, 26, 0.14); --accent: #b9812a; --accent-strong: #96691f;
+  --good: #3f7a52; --good-bg: rgba(63, 122, 82, 0.12);
+  --bad: #a84a32; --bad-bg: rgba(168, 74, 50, 0.12);
+  --neutral-bg: rgba(18, 24, 26, 0.06);
+  --text: var(--ink); --text-soft: var(--ink-soft); --bg: var(--chalk); --surface: var(--panel);
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --text: #e9ebe4; --text-soft: #aab0a8; --bg: #12181a; --surface: #182022;
+    --line: rgba(233, 235, 228, 0.14); --accent: #d6a34a; --accent-strong: #eab766;
+    --good: #6cbb85; --good-bg: rgba(108, 187, 133, 0.14);
+    --bad: #e08064; --bad-bg: rgba(224, 128, 100, 0.14);
+    --neutral-bg: rgba(233, 235, 228, 0.07); color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --text: #e9ebe4; --text-soft: #aab0a8; --bg: #12181a; --surface: #182022;
+  --line: rgba(233, 235, 228, 0.14); --accent: #d6a34a; --accent-strong: #eab766;
+  --good: #6cbb85; --good-bg: rgba(108, 187, 133, 0.14);
+  --bad: #e08064; --bad-bg: rgba(224, 128, 100, 0.14);
+  --neutral-bg: rgba(233, 235, 228, 0.07); color-scheme: dark;
+}
+:root[data-theme="light"] {
+  --text: var(--ink); --text-soft: var(--ink-soft); --bg: var(--chalk); --surface: var(--panel);
+  --line: rgba(18, 24, 26, 0.14); --accent: #b9812a; --accent-strong: #96691f;
+  --good: #3f7a52; --good-bg: rgba(63, 122, 82, 0.12);
+  --bad: #a84a32; --bad-bg: rgba(168, 74, 50, 0.12);
+  --neutral-bg: rgba(18, 24, 26, 0.06); color-scheme: light;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font-family: Georgia, "Iowan Old Style", serif; font-size: 16px; line-height: 1.5; }
+.page { max-width: 920px; margin: 0 auto; padding: 28px 20px 80px; }
+.display { font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif; font-weight: 800; letter-spacing: -0.01em; text-wrap: balance; }
+.eyebrow { font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif; font-weight: 700; font-size: 11.5px; letter-spacing: 0.11em; text-transform: uppercase; color: var(--text-soft); }
+.mono { font-family: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, "Roboto Mono", monospace; font-variant-numeric: tabular-nums; }
+.masthead { display: flex; justify-content: space-between; align-items: flex-end; gap: 20px; flex-wrap: wrap; padding-bottom: 20px; border-bottom: 2px solid var(--ink); }
+.masthead h1 { margin: 0 0 6px; font-size: 30px; line-height: 1.05; }
+.masthead .sub { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif; font-size: 13.5px; color: var(--text-soft); max-width: 46ch; }
+.masthead-meta { text-align: right; font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif; }
+.masthead-meta .week { font-size: 13px; font-weight: 700; color: var(--accent-strong); letter-spacing: 0.04em; text-transform: uppercase; }
+.masthead-meta .synced { font-size: 12px; color: var(--text-soft); margin-top: 3px; }
+.health { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin: 22px 0 8px; }
+.health-chip { border: 1px solid var(--line); border-radius: 3px; padding: 10px 12px; background: var(--surface); }
+.health-chip .day { font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif; font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-soft); display: block; margin-bottom: 5px; }
+.health-chip .state { display: flex; align-items: center; gap: 6px; font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif; font-size: 13px; font-weight: 700; }
+.health-chip .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.health-chip.ok .dot { background: var(--good); } .health-chip.ok .state { color: var(--good); }
+.health-chip.stale .dot { background: var(--bad); } .health-chip.stale .state { color: var(--bad); }
+.health-chip.pending .dot { background: var(--text-soft); } .health-chip.pending .state { color: var(--text-soft); }
+.health-chip .ts { margin-top: 4px; font-size: 11.5px; color: var(--text-soft); }
+.stale-banner { display: flex; align-items: flex-start; gap: 10px; background: var(--bad-bg); border: 1px solid var(--bad); border-radius: 3px; padding: 12px 14px; margin: 4px 0 18px; font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif; font-size: 13px; color: var(--text); }
+.stale-banner strong { color: var(--bad); }
+.panel { padding: 34px 0 8px; border-top: 1px solid var(--line); margin-top: 34px; }
+.panel:first-of-type { margin-top: 30px; }
+.panel-head { display: flex; justify-content: space-between; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 6px; }
+.panel-head .eyebrow.headline { color: var(--accent-strong); }
+.panel h2 { margin: 2px 0 4px; font-size: 22px; }
+.panel .dek { margin: 0 0 18px; font-size: 14.5px; color: var(--text-soft); max-width: 62ch; }
+.panel .asof { font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif; font-size: 11.5px; color: var(--text-soft); white-space: nowrap; }
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+thead th { text-align: left; font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif; font-size: 11px; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; color: var(--text-soft); padding: 0 10px 8px 0; border-bottom: 1px solid var(--line); }
+tbody td { padding: 9px 10px 9px 0; border-bottom: 1px solid var(--line); vertical-align: middle; }
+tbody tr:last-child td { border-bottom: none; }
+td.num, th.num { text-align: right; }
+.matchup { white-space: nowrap; } .matchup .away { color: var(--text-soft); } .matchup .at { color: var(--text-soft); padding: 0 4px; }
+.pill { display: inline-flex; align-items: center; gap: 5px; font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif; font-size: 11.5px; font-weight: 700; padding: 3px 9px; border-radius: 999px; white-space: nowrap; }
+.pill.toward { background: var(--good-bg); color: var(--good); }
+.pill.away { background: var(--bad-bg); color: var(--bad); }
+.pill.flat { background: var(--neutral-bg); color: var(--text-soft); }
+.pill.flip { background: transparent; border: 1px solid var(--bad); color: var(--bad); }
+.pill.low-conf { background: transparent; border: 1px solid var(--text-soft); color: var(--text-soft); }
+.pill.standard { background: var(--neutral-bg); color: var(--text-soft); }
+.panel.secondary { background: var(--neutral-bg); margin-left: -20px; margin-right: -20px; padding-left: 20px; padding-right: 20px; }
+.panel.secondary .eyebrow { color: var(--text-soft); }
+.disclaimer { display: flex; gap: 12px; border: 1px solid var(--bad); background: var(--bad-bg); border-radius: 3px; padding: 14px 16px; margin: 4px 0 22px; }
+.disclaimer .mark { font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif; font-weight: 800; color: var(--bad); font-size: 13px; flex: none; padding-top: 1px; }
+.disclaimer p { margin: 0; font-size: 13.5px; color: var(--text); max-width: 64ch; }
+.disclaimer p + p { margin-top: 6px; }
+.stat-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; background: var(--line); border: 1px solid var(--line); margin-bottom: 24px; }
+.stat-cell { background: var(--surface); padding: 16px 16px 14px; }
+.stat-cell .label { font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif; font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-soft); display: block; margin-bottom: 6px; }
+.stat-cell .value { font-size: 26px; font-weight: 800; font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif; }
+.stat-cell .value.good { color: var(--good); } .stat-cell .value.bad { color: var(--bad); }
+.stat-cell .note { font-size: 11.5px; color: var(--text-soft); margin-top: 4px; }
+.empty-state { border: 1px dashed var(--line); border-radius: 3px; padding: 22px; text-align: center; color: var(--text-soft); font-size: 13.5px; }
+.ref-note { font-size: 12px; color: var(--text-soft); margin-top: 10px; }
+footer { margin-top: 50px; padding-top: 20px; border-top: 2px solid var(--ink); font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif; font-size: 12px; color: var(--text-soft); display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+footer .theme-toggle { display: inline-flex; border: 1px solid var(--line); border-radius: 999px; overflow: hidden; }
+footer .theme-toggle button { appearance: none; border: none; background: transparent; color: var(--text-soft); padding: 5px 12px; font: inherit; font-size: 12px; cursor: pointer; }
+footer .theme-toggle button.active { background: var(--ink); color: var(--bg); }
+@media (max-width: 620px) { .health { grid-template-columns: repeat(2, 1fr); } .stat-row { grid-template-columns: repeat(2, 1fr); } .masthead { align-items: flex-start; } .masthead-meta { text-align: left; } }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <div class="masthead">
+    <div>
+      <h1 class="display">CFB Line &amp; Pool Monitor</h1>
+      <p class="sub">Market movement and pool drift first &mdash; the model's picks are reference-only, never sharp. Personal decision support, not advice.</p>
+    </div>
+    <div class="masthead-meta">
+      <div class="week">Week 1 &middot; 2026</div>
+      <div class="synced">Generated Aug 01, 00:17 UTC</div>
+    </div>
+  </div>
+
+  <div class="health"><div class="health-chip pending"><span class="day">Tue &amp;middot; Card</span><span class="state"><span class="dot"></span>Pending</span><div class="ts mono">Not yet run</div></div><div class="health-chip pending"><span class="day">Thu/Sat &amp;middot; Drift</span><span class="state"><span class="dot"></span>Pending</span><div class="ts mono">Not yet run</div></div><div class="health-chip pending"><span class="day">Sat &amp;middot; Pool</span><span class="state"><span class="dot"></span>Pending</span><div class="ts mono">Not yet run</div></div><div class="health-chip pending"><span class="day">Mon &amp;middot; Audit</span><span class="state"><span class="dot"></span>Pending</span><div class="ts mono">Not yet run</div></div></div>
+
+  <section class="panel">
+    <div class="panel-head">
+      <div><div class="eyebrow headline">Headline &middot; Market Read</div><h2 class="display">Market Movement</h2></div>
+      <div class="asof mono">opening &rarr; latest, same book</div>
+    </div>
+    <p class="dek">Every lined game, opening line vs. the latest number from the <em>same</em> book. No model involved: this is what the market itself has done.</p>
+    
+    <div class="table-wrap"><table><thead><tr><th>Game</th><th>Open</th><th>Latest</th><th>Movement</th><th class="num">Book</th></tr></thead>
+    <tbody><tr><td colspan="5"><div class="empty-state">No lines yet this week.</div></td></tr></tbody></table></div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head">
+      <div><div class="eyebrow headline">Headline &middot; Your Pool</div><h2 class="display">Pool Drift</h2></div>
+      <div class="asof mono">vs. entered pool line</div>
+    </div>
+    <p class="dek">Your locked picks against the pool's own number, compared to where the market sits now. Sorted worst-for-your-pick first.</p>
+    
+    <div class="empty-state">No pool picks entered for this week yet &mdash; run <code>models/pool_view.py</code> after committing <code>data/pool_picks/week_1_2026.csv</code>.</div>
+  </section>
+
+  <section class="panel secondary">
+    <div class="panel-head">
+      <div><div class="eyebrow">Reference Only &middot; Not a Recommendation</div><h2 class="display">Model Picks &mdash; EPA-Only Baseline</h2></div>
+      <div class="asof mono">fit on prior seasons</div>
+    </div>
+    
+    <div class="disclaimer"><span class="mark">&#9888;</span><div>
+      <p><strong>This baseline has not demonstrated a betting edge over the market.</strong> Six independent tests &mdash; three candidate features, three structural fixes for its worst bucket &mdash; were all rejected against a pre-registered bar. Every edge bucket sits at or below the ~52.4% break-even line.</p>
+      <p>The picks below are shown for reference, not as a recommendation. Large-edge picks are flagged low-confidence, not high &mdash; the model's biggest disagreements with the market are its <em>least</em> reliable, not its best.</p>
+    </div></div>
+    <div class="table-wrap"><table><thead><tr><th>Game</th><th>Side</th><th class="num">Edge</th><th class="num">Confidence</th></tr></thead>
+    <tbody><tr><td colspan="4"><div class="empty-state">No card generated yet this week.</div></td></tr></tbody></table></div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head">
+      <div><div class="eyebrow">Season Performance</div><h2 class="display">The Ledger</h2></div>
+      <div class="asof mono">updated Mondays after grading</div>
+    </div>
+    <p class="dek">Every graded pick counts here, wins and losses both &mdash; nothing excluded after the fact.</p>
+    <div class="empty-state">No games graded yet this season &mdash; the first Monday audit runs after Week 1 and will populate Record (ATS), ROI, Avg CLV, and hook losses here, game by game.</div>
+  </section>
+
+  <footer>
+    <span>CFB Line &amp; Pool Monitor &middot; personal decision support, not financial advice &middot; data: CFBD, The Odds API</span>
+    <div class="theme-toggle" role="group" aria-label="Theme">
+      <button type="button" onclick="setTheme('light', this)">Light</button>
+      <button type="button" onclick="setTheme('dark', this)">Dark</button>
+      <button type="button" class="active" onclick="setTheme(null, this)">Auto</button>
+    </div>
+  </footer>
+
+</div>
+<script>
+function setTheme(mode, btn) {
+  if (mode) { document.documentElement.setAttribute('data-theme', mode); }
+  else { document.documentElement.removeAttribute('data-theme'); }
+  btn.parentElement.querySelectorAll('button').forEach(function (b) { b.classList.remove('active'); });
+  btn.classList.add('active');
+}
+</script>
+</body>
+</html>

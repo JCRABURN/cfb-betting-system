@@ -89,7 +89,7 @@ def main():
     for path in (["id"], ["season"], ["week"], ["seasonType"], ["startDate"],
                  ["homeTeam"], ["awayTeam"], ["venue"], ["neutralSite"], ["conferenceGame"]):
         check_path(game, path, "games", results)
-    # homePoints/awayPoints -- what update_results.py reads to grade picks. Only
+    # homePoints/awayPoints -- what post_game_audit.py reads to grade picks. Only
     # meaningful on a completed game, so fall back to whichever game in the sample
     # actually has scores rather than failing on game[0] if it hasn't kicked off.
     scored_game = next((g for g in games if g.get("homePoints") is not None), game)

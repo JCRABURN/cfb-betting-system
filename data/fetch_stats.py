@@ -38,9 +38,18 @@ def get_current_week():
     calendar is genuinely pre-season) is a different, legitimate case and
     still defaults to week 1 softly -- main()'s `if not games` guard does
     correctly no-op that case into an offseason placeholder.
+
+    Found live while wiring build_dashboard.py (2026-08-01): /calendar
+    requires a `year` query param -- omitting it isn't "give me every
+    year," it's an outright 400 ("Validation Failed", {"year": {"message":
+    "year"}}). This function had never actually been called without one
+    (every prior manual check in this project explicitly passed
+    year=<some year> when testing /calendar directly), so it had silently
+    never worked at all until this was caught. Confirmed live: with
+    year=2026, returns 200 and 16 calendar entries.
     """
     url = f"{CFBD_BASE}/calendar"
-    resp = requests.get(url, headers=HEADERS)
+    resp = requests.get(url, headers=HEADERS, params={"year": datetime.utcnow().year})
     resp.raise_for_status()
     weeks = resp.json()
     now = datetime.utcnow().isoformat()
@@ -148,7 +157,7 @@ def persist_to_db(games, enriched_games, epa_stats=None):
 
     epa_stats is the raw per-team dict from fetch_epa_stats() (not the flattened
     enriched dict), so success_rate/havoc_rate can be pulled straight from the CFBD
-    response shape without changing what generate_report.py/spread_model.py consume.
+    response shape without an extra reshaping step.
     """
     epa_stats = epa_stats or {}
     now = datetime.utcnow().isoformat()

@@ -294,9 +294,10 @@ def list_weeks(conn, season):
 
 
 # ---------------------------------------------------------------------------
-# Grading -- matches update_results.py's ATS/CLV/unit-P&L conventions exactly
-# (verified against that file), reimplemented here rather than imported so the
-# backtest harness has no coupling to the live-pipeline module.
+# Grading -- the ATS/CLV/unit-P&L conventions used everywhere in this project.
+# models/post_game_audit.py imports these directly to grade live picks, so a
+# real pick is graded under the exact same rules as every historical one in
+# the backtest, not a second, separately maintained implementation.
 # ---------------------------------------------------------------------------
 
 def grade_ats(side, home_team, away_team, opening_spread, home_points, away_points):

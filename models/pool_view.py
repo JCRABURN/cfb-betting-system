@@ -18,14 +18,23 @@ load_pool_entries() reads this shape from a CSV (exported from Excel, or
 typed by hand) with the same column names -- kept as a separate function
 from build_pool_view() on purpose, so the report logic never depends on
 CSV being the input format.
+
+The CSV lives at data/pool_picks/week_{week}_{season}.csv and is TRACKED
+in git (not gitignored, unlike the other data/ scratch directories) --
+the automated Thursday/Saturday pulls need it present in a fresh
+checkout, so it has to be committed after you enter picks each week, not
+just kept locally.
 """
 
 import csv
 import os
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _ROOT)
+sys.path.insert(0, os.path.join(_ROOT, "data"))
 import db
+import fetch_stats
 from line_utils import get_latest_line
 
 
@@ -116,28 +125,45 @@ def load_pool_entries(path):
     return entries
 
 
+def default_csv_path(week, season):
+    return f"data/pool_picks/week_{week}_{season}.csv"
+
+
 def main():
     import argparse
     import json
 
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--csv", required=True, help="Path to a pool-picks CSV, see load_pool_entries()")
+    parser.add_argument("--csv", default=None,
+                         help="Defaults to data/pool_picks/week_{week}_{season}.csv for the "
+                              "current week (see default_csv_path/fetch_stats.get_current_week)")
     args = parser.parse_args()
 
-    pool_entries = load_pool_entries(args.csv)
+    with db.log_run("pool_view") as run:
+        csv_path = args.csv
+        if csv_path is None:
+            week, season = fetch_stats.get_current_week()
+            csv_path = default_csv_path(week, season)
 
-    conn = db.get_connection()
-    try:
-        view = build_pool_view(conn, pool_entries)
-    finally:
-        conn.close()
+        if not os.path.exists(csv_path):
+            print(f"No pool-picks file at {csv_path} yet -- nothing to do this run.")
+            return
 
-    os.makedirs("data/line_views", exist_ok=True)
-    out_path = "data/line_views/pool_drift_latest.json"
-    with open(out_path, "w", encoding="utf-8") as f:
-        json.dump(view, f, indent=2)
+        pool_entries = load_pool_entries(csv_path)
 
-    print(f"Pool view: {len(view['games'])} picks, {len(view['skipped'])} skipped. Saved to {out_path}")
+        conn = db.get_connection()
+        try:
+            view = build_pool_view(conn, pool_entries)
+        finally:
+            conn.close()
+
+        os.makedirs("data/line_views", exist_ok=True)
+        out_path = "data/line_views/pool_drift_latest.json"
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(view, f, indent=2)
+
+        run["rows_added"] = len(view["games"])
+        print(f"Pool view: {len(view['games'])} picks, {len(view['skipped'])} skipped. Saved to {out_path}")
 
 
 if __name__ == "__main__":

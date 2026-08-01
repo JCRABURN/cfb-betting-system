@@ -25,8 +25,11 @@ specifically called for.
 import os
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _ROOT)
+sys.path.insert(0, os.path.join(_ROOT, "data"))
 import db
+import fetch_stats
 import backtest_harness as bh
 from line_utils import list_all_games, get_latest_line
 
@@ -100,23 +103,31 @@ def main():
     import json
 
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--season", type=int, required=True)
-    parser.add_argument("--week", type=int, required=True)
+    parser.add_argument("--season", type=int, default=None,
+                         help="Defaults to the current week's season via fetch_stats.get_current_week()")
+    parser.add_argument("--week", type=int, default=None,
+                         help="Defaults to the current week via fetch_stats.get_current_week()")
     args = parser.parse_args()
 
-    conn = db.get_connection()
-    try:
-        view = build_gambling_view(conn, args.season, args.week)
-    finally:
-        conn.close()
+    with db.log_run("gambling_view") as run:
+        season, week = args.season, args.week
+        if season is None or week is None:
+            week, season = fetch_stats.get_current_week()
 
-    os.makedirs("data/line_views", exist_ok=True)
-    out_path = f"data/line_views/gambling_week_{args.week}_{args.season}.json"
-    with open(out_path, "w", encoding="utf-8") as f:
-        json.dump(view, f, indent=2)
+        conn = db.get_connection()
+        try:
+            view = build_gambling_view(conn, season, week)
+        finally:
+            conn.close()
 
-    print(f"Season {args.season} Week {args.week} gambling view: {len(view['games'])} games, "
-          f"{len(view['skipped'])} skipped. Saved to {out_path}")
+        os.makedirs("data/line_views", exist_ok=True)
+        out_path = f"data/line_views/gambling_week_{week}_{season}.json"
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(view, f, indent=2)
+
+        run["rows_added"] = len(view["games"])
+        print(f"Season {season} Week {week} gambling view: {len(view['games'])} games, "
+              f"{len(view['skipped'])} skipped. Saved to {out_path}")
 
 
 if __name__ == "__main__":

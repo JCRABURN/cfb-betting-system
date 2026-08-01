@@ -1,0 +1,51 @@
+name: Post-Game Audit
+
+on:
+  schedule:
+    - cron: '0 11 * * 1'  # Monday 6am CT (11:00 UTC)
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Grade picks, CLV, hook flags
+        # Replaces the old update_results.py (deleted) and its
+        # docs/data/all_picks.json + weekly weight-retraining machinery,
+        # both tied to the abandoned pre-EPA-only weighted model. See
+        # models/post_game_audit.py for what this grades against and why
+        # backdoor-cover detection isn't implemented (needs data this
+        # project hasn't ingested).
+        env:
+          CFBD_API_KEY: ${{ secrets.CFBD_API_KEY }}
+        run: python models/post_game_audit.py
+
+      - name: Build dashboard
+        if: always()
+        env:
+          CFBD_API_KEY: ${{ secrets.CFBD_API_KEY }}
+        run: python models/build_dashboard.py
+
+      - name: Commit updated results and dashboard
+        if: always()
+        run: |
+          git config user.name "cfb-bot"
+          git config user.email "bot@cfb-betting-system"
+          git add docs/ data/cfb.db
+          git diff --staged --quiet || git commit -m "Post-game audit $(date +'%Y-%m-%d')"
+          git push

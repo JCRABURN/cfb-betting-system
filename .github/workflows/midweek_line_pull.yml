@@ -37,10 +37,36 @@ jobs:
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
         run: python data/fetch_odds.py
 
-      - name: Commit updated lines
+      - name: Market movement view
+        if: always()
+        env:
+          CFBD_API_KEY: ${{ secrets.CFBD_API_KEY }}
+        run: python models/gambling_view.py
+
+      - name: Pool drift view
+        # No-op (prints a message, exits 0) if you haven't committed a
+        # data/pool_picks/week_{week}_{season}.csv for this week yet --
+        # not an error, just nothing to compare against.
+        if: always()
+        env:
+          CFBD_API_KEY: ${{ secrets.CFBD_API_KEY }}
+        run: python models/pool_view.py
+
+      - name: Build dashboard
+        # Runs even if an earlier step failed, so the published page can
+        # say so (stale banner, per-section health) instead of silently
+        # keeping the last successful pull's numbers up with no indication
+        # anything broke.
+        if: always()
+        env:
+          CFBD_API_KEY: ${{ secrets.CFBD_API_KEY }}
+        run: python models/build_dashboard.py
+
+      - name: Commit updated lines and dashboard
+        if: always()
         run: |
           git config user.name "cfb-bot"
           git config user.email "bot@cfb-betting-system"
-          git add data/cfb.db
+          git add docs/ data/cfb.db
           git diff --staged --quiet || git commit -m "Midweek line pull $(date +'%Y-%m-%d %H:%M UTC')"
           git push
