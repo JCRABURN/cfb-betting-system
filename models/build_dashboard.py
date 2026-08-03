@@ -325,10 +325,15 @@ def _model_picks_rows(card):
 
 
 def render_dashboard(season, week, card, gambling, pool, ledger, healths, generated_at):
-    tue = _health_chip_html("Tue &middot; Card", healths["card_generator"])
-    thu = _health_chip_html("Thu/Sat &middot; Drift", healths["gambling_view"])
-    sat = _health_chip_html("Sat &middot; Pool", healths["pool_view"])
-    mon = _health_chip_html("Mon &middot; Audit", healths["post_game_audit"])
+    # Literal "·" here, not the &middot; entity -- _health_chip_html() runs
+    # day_label through _esc(), which would escape the entity's own "&"
+    # into "&amp;middot;" and render literally instead of as a dot (the bug
+    # this fixed). A raw Unicode character passes through _esc() untouched
+    # since it only escapes &, <, > -- and docs/index.html is UTF-8.
+    tue = _health_chip_html("Tue · Card", healths["card_generator"])
+    thu = _health_chip_html("Thu/Sat · Drift", healths["gambling_view"])
+    sat = _health_chip_html("Sat · Pool", healths["pool_view"])
+    mon = _health_chip_html("Mon · Audit", healths["post_game_audit"])
 
     market_banner = _stale_banner_html("Market Movement", healths["gambling_view"])
     pool_banner = _stale_banner_html("Pool Drift", healths["pool_view"])
