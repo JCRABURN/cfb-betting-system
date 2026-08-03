@@ -8,6 +8,13 @@ why). This is the single shared output both eventual contest consumers
 either contest's own rules (entry format, scoring, unit sizing) -- just the
 model's view of every game.
 
+Week 1 games use prior-season-final EPA as a fallback input (no in-season
+data can exist yet -- see backtest_harness.get_prior_season_final_stats(),
+per MODEL_DESIGN.md §6's week 1 decision). Every such game is explicitly
+marked `uses_prior_season_data: true` and confidence-capped to
+"low_confidence_prior_season_data" (never "standard"), and surfaced in
+`flagged_prior_season_data` -- visible on the dashboard, not silent.
+
 Reuses the SAME fitted model as the validated backtest (backtest_harness.py
 + baseline_epa.py) -- intercept+coefficient fit via OLS on seasons strictly
 before the target season, predictions built from get_team_stats_as_of's
@@ -92,14 +99,25 @@ def _assign_confidence(entries):
     margins in lopsided games). So every game gets "standard" except that
     one flagged bucket, which gets "low_confidence_large_edge" -- the
     opposite of what the original rank-by-edge scheme did with these same
-    games. Does NOT reorder `entries` -- edge size is not a quality
-    ranking, so there's nothing to sort by."""
+    games.
+
+    Week 1 games get a THIRD, distinct state -- "low_confidence_prior_season_data"
+    -- and it takes priority over the edge check, per MODEL_DESIGN.md §6's
+    week 1 decision: "prior season's final EPA as a rough prior... with
+    confidence heavily capped." This is a different reason for caution than
+    a large edge (data provenance -- roster turnover, transfer portal, over
+    an offseason -- not extrapolation risk), so a week 1 game can never
+    read as "standard" regardless of how small its edge looks; the input
+    feeding that edge is already known-weak. Does NOT reorder `entries` --
+    neither edge size nor data provenance is a quality ranking, so there's
+    nothing to sort by."""
     for entry in entries:
-        entry["confidence"] = (
-            "low_confidence_large_edge"
-            if entry["edge"] >= LARGE_EDGE_LOW_CONFIDENCE_THRESHOLD
-            else "standard"
-        )
+        if entry["uses_prior_season_data"]:
+            entry["confidence"] = "low_confidence_prior_season_data"
+        elif entry["edge"] >= LARGE_EDGE_LOW_CONFIDENCE_THRESHOLD:
+            entry["confidence"] = "low_confidence_large_edge"
+        else:
+            entry["confidence"] = "standard"
     return entries
 
 
@@ -143,6 +161,15 @@ def build_card(conn, season, week):
         side = home_team if edge_home > 0 else away_team
         edge = round(abs(edge_home), 2)
 
+        # Explicit and visible, not inferred from the confidence label alone
+        # (MODEL_DESIGN.md §6: week 1 must be visibly flagged, not silent) --
+        # true whenever EITHER team's stats came from
+        # backtest_harness.get_prior_season_final_stats() (week 1 only).
+        uses_prior_season_data = (
+            stats["home_stats"]["is_prior_season_fallback"]
+            or stats["away_stats"]["is_prior_season_fallback"]
+        )
+
         entries.append({
             "game_id": game_id,
             "home_team": home_team,
@@ -154,6 +181,7 @@ def build_card(conn, season, week):
             "predicted_home_margin": round(predicted_margin, 2),
             "side": side,
             "edge": edge,
+            "uses_prior_season_data": uses_prior_season_data,
         })
 
     _assign_confidence(entries)
@@ -166,6 +194,7 @@ def build_card(conn, season, week):
         "coefficient": round(coefs[0], 4),
         "games": entries,
         "flagged_large_edge": [e for e in entries if e["confidence"] == "low_confidence_large_edge"],
+        "flagged_prior_season_data": [e for e in entries if e["uses_prior_season_data"]],
         "skipped": skipped,
     }
 

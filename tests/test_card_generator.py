@@ -345,3 +345,95 @@ def test_persist_picks_to_db_is_idempotent(temp_db):
     assert first == 3
     assert second == 0
     assert total == 3
+
+
+# ---------------------------------------------------------------------------
+# Week 1 prior-season fallback (MODEL_DESIGN.md §6)
+# ---------------------------------------------------------------------------
+
+def build_week1_fixture(conn):
+    """Season 2023 week 1: no in-season EPA can exist yet (structurally --
+    no week 0). E/F have PRIOR-SEASON (2022) data and should fall back to
+    it; K has none at all and should be skipped, not fabricated.
+
+    With intercept=0.5, coef=65.0 from build_training_fixture:
+      E(net .30, from 2022) vs F(net .00, from 2022): epa_diff .30 ->
+      predicted margin 0.5 + 65*0.30 = 20.0
+    """
+    insert_stats(conn, 2022, 15, "E", 0.30, 0.0)  # E's final 2022 snapshot
+    insert_stats(conn, 2022, 15, "F", 0.00, 0.0)  # F's final 2022 snapshot
+
+    insert_game(conn, 10, 2023, 1, "E", "F", completed=0)
+    insert_game(conn, 11, 2023, 1, "K", "E", completed=0)  # K has no 2022 data at all
+
+    insert_line(conn, 10, 2023, 1, "E", "F", home_spread=-13.0, line_type="current")
+    insert_line(conn, 11, 2023, 1, "K", "E", home_spread=-3.0, line_type="current")
+
+
+def test_week1_game_falls_back_to_prior_season_and_is_flagged(temp_db):
+    conn = temp_db.get_connection()
+    build_training_fixture(conn)
+    build_week1_fixture(conn)
+    conn.commit()
+
+    card = cg.build_card(conn, 2023, 1)
+    conn.close()
+
+    by_id = {g["game_id"]: g for g in card["games"]}
+    g10 = by_id[10]
+    assert g10["predicted_home_margin"] == 20.0
+    assert g10["uses_prior_season_data"] is True
+    assert g10["confidence"] == "low_confidence_prior_season_data"
+
+    flagged_ids = {g["game_id"] for g in card["flagged_prior_season_data"]}
+    assert 10 in flagged_ids
+
+
+def test_week1_confidence_capped_even_when_edge_is_small(temp_db):
+    """§6: confidence must be capped for week 1 fallback games regardless of
+    edge size -- a small-edge week 1 game must NOT read as "standard"."""
+    conn = temp_db.get_connection()
+    build_training_fixture(conn)
+    insert_stats(conn, 2022, 15, "E", 0.05, 0.0)
+    insert_stats(conn, 2022, 15, "F", 0.05, 0.0)  # epa_diff 0 -> tiny edge
+    insert_game(conn, 20, 2023, 1, "E", "F", completed=0)
+    insert_line(conn, 20, 2023, 1, "E", "F", home_spread=-0.5, line_type="current")
+    conn.commit()
+
+    card = cg.build_card(conn, 2023, 1)
+    conn.close()
+
+    game = card["games"][0]
+    assert game["edge"] < cg.LARGE_EDGE_LOW_CONFIDENCE_THRESHOLD  # would be "standard" otherwise
+    assert game["confidence"] == "low_confidence_prior_season_data"
+
+
+def test_week1_game_with_no_prior_season_data_is_skipped_not_fabricated(temp_db):
+    conn = temp_db.get_connection()
+    build_training_fixture(conn)
+    build_week1_fixture(conn)
+    conn.commit()
+
+    card = cg.build_card(conn, 2023, 1)
+    conn.close()
+
+    game_ids = {g["game_id"] for g in card["games"]}
+    assert 11 not in game_ids  # K has no 2022 data -- must not appear as a fabricated pick
+
+    skipped_by_id = {s["game_id"]: s["reason"] for s in card["skipped"]}
+    assert skipped_by_id[11] == "missing_pregame_stats"
+
+
+def test_non_week1_games_never_flagged_prior_season_data(temp_db):
+    """Sanity check against false positives: a normal week-5 game (existing
+    fixture) must never carry the week-1 flag."""
+    conn = temp_db.get_connection()
+    build_training_fixture(conn)
+    build_target_week_fixture(conn)
+    conn.commit()
+
+    card = cg.build_card(conn, 2023, 5)
+    conn.close()
+
+    assert card["flagged_prior_season_data"] == []
+    assert all(not g["uses_prior_season_data"] for g in card["games"])

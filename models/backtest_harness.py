@@ -55,7 +55,11 @@ import db
 
 def get_team_stats_as_of(conn, team, season, week):
     """Most recent point-in-time snapshot strictly before `week` in `season`.
-    Returns None if none exists (e.g. week 1, nothing played yet this season)."""
+    Returns None if none exists -- structurally always the case for week 1,
+    since no week 0 row can ever satisfy `week < 1` for any team, any season
+    (confirmed: point-in-time coverage is weeks 1-15 only, 2019-2025). See
+    get_prior_season_final_stats() for week 1's deliberate fallback,
+    per MODEL_DESIGN.md §6."""
     row = conn.execute(
         """
         SELECT offense_epa_play, defense_epa_play, offense_success_rate,
@@ -76,6 +80,49 @@ def get_team_stats_as_of(conn, team, season, week):
         "defense_success_rate": row[3],
         "havoc_rate": row[4],
         "as_of_week": row[5],
+        "as_of_season": season,
+        "is_prior_season_fallback": False,
+    }
+
+
+def get_prior_season_final_stats(conn, team, season):
+    """Week 1's deliberate fallback input, per MODEL_DESIGN.md §6's build-time
+    decision: "prior season's final EPA as a rough prior... current lean,
+    with confidence heavily capped." Returns the LATEST cfbd_point_in_time
+    row from `season - 1`, or None if the team has no data that season (a
+    genuine gap -- e.g. a team's first-ever FBS season -- not something to
+    paper over).
+
+    No lookahead risk: season-1 ended in full before season's week 1 kicked
+    off, so this is strictly historical information, not a peek at anything
+    contemporaneous with the game being predicted -- a different kind of
+    input than get_team_stats_as_of's within-season point-in-time guarantee,
+    but not a weaker one on the lookahead axis. It IS a weaker one on
+    relevance (roster turnover, transfer portal, coaching changes over an
+    offseason) -- that's exactly why the caller must cap confidence on
+    games that use it, not treat it as equivalent to real in-season data."""
+    row = conn.execute(
+        """
+        SELECT offense_epa_play, defense_epa_play, offense_success_rate,
+               defense_success_rate, havoc_rate, week
+        FROM team_game_stats
+        WHERE source = 'cfbd_point_in_time' AND team = ? AND season = ?
+        ORDER BY week DESC
+        LIMIT 1
+        """,
+        (team, season - 1),
+    ).fetchone()
+    if row is None:
+        return None
+    return {
+        "offense_epa_play": row[0],
+        "defense_epa_play": row[1],
+        "offense_success_rate": row[2],
+        "defense_success_rate": row[3],
+        "havoc_rate": row[4],
+        "as_of_week": row[5],
+        "as_of_season": season - 1,
+        "is_prior_season_fallback": True,
     }
 
 
@@ -231,9 +278,22 @@ def get_pregame_stats(conn, home_team, away_team, season, week, game_date):
     whole package. Whether missing rest is fatal is up to each feature_fn to
     decide (return None itself if it needs rest and doesn't have it), same
     contract as havoc_rate's occasional NULLs -- team_game_stats fields are
-    the hard requirement here, rest is an optional situational add-on."""
+    the hard requirement here, rest is an optional situational add-on.
+
+    Week 1 only: get_team_stats_as_of() always returns None (no week 0
+    exists for any team to satisfy `week < 1`), so this falls back to
+    get_prior_season_final_stats() -- per MODEL_DESIGN.md §6's week 1
+    decision -- rather than skipping every week 1 game outright. If a team
+    has no prior-season data either (first FBS season), the game is still
+    skipped; this fills a known, structural gap, it doesn't fabricate data
+    where genuinely none exists."""
     home_stats = get_team_stats_as_of(conn, home_team, season, week)
     away_stats = get_team_stats_as_of(conn, away_team, season, week)
+    if week == 1:
+        if home_stats is None:
+            home_stats = get_prior_season_final_stats(conn, home_team, season)
+        if away_stats is None:
+            away_stats = get_prior_season_final_stats(conn, away_team, season)
     if home_stats is None or away_stats is None:
         return None
     return {

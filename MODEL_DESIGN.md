@@ -250,46 +250,66 @@ fabricate the ones that aren't.**
 
 ---
 
-## 6. OPEN — baseline definition + "no edge" reference  🔲
+## 6. DECISION — baseline model + "no edge" reference  ✅ LOCKED
 
-- Simplest defensible baseline given the data (SP+ only? SP+ vs. spread?).
-- What score = "no real edge" so we know what beating the market actually
-  requires. (Break-even ATS at standard -110 juice ≈ 52.4% — flagged here as
-  the honest bar; to be expanded in this sitting.)
+The baseline is the deliberately-dumb reference every future feature must beat.
+If a sophisticated feature can't beat a two-line baseline, the sophistication is
+noise. A baseline that's secretly clever hides how much work the real features
+are doing — so keep it genuinely simple.
 
-### ADDENDUM (2026-07-30) — baseline run, and facts learned, not yet folded into the section above
+### The baseline (EPA-based — SP+ is unavailable in the backtest per §3)
+Predict each game's margin from the two teams' **point-in-time EPA
+differential**: (home offense EPA vs. away defense EPA) − (away offense EPA vs.
+home defense EPA), plus a home-field constant. Compare predicted margin to the
+locked/opening spread to pick a side. No weighting scheme, no situational
+factors. That's the reference bar.
 
-Ran the EPA-differential baseline (offense_epa_play - defense_epa_play, home
-minus away, one slope+intercept fit per season on strictly-prior seasons)
-through the §4 walk-forward harness. Result: 2021-2025 combined, 51.1% ATS /
--2.5% ROI on all predictions, 51.3% ATS / -2.0% ROI on the edge≥3 bet-subset.
-This is the correct, expected outcome for a dumb single-feature model against
-an efficient market, not a failure -- checked explicitly for a lookahead leak
-before reporting it as fine (a profitable dumb baseline would have been the
-suspicious result). Full per-season table in ARCHITECTURE.md §14.
+Join discipline (from Phase 1): predicting week N uses each team's `week=N-1`
+(or latest prior) row — NEVER `week=N`, which already contains week N's results.
 
-Three facts learned while running it, recorded here as known limitations, not to be "fixed" as bugs:
+### The break-even math — the number to memorize
+At standard −110 odds you must win **52.38% ATS just to break even** (risk $110
+to win $100; the juice eats everything below that line). Consequences:
+- **50% is not neutral — it's losing** at the house rate. A naive model at ~50%
+  ATS vs. an efficient market is the EXPECTED result, not a failure.
+- The viable range is tiny: 52.4% = break-even, 53% = genuinely good, 55% =
+  elite/rare. ~5 points separates "losing" from "world-class." Small win-rate
+  differences = enormous outcome differences.
+- **CLV matters more than win rate, especially early.** Win rate over a few
+  hundred games is very noisy (can hit 55% on luck or 50% while genuinely good).
+  Beating the closing line is evidence of real edge BEFORE results are known.
+  Over small samples, "did I beat the close?" >> "did I win?"
 
-- **Usable backtest history is 2021-2025 (five seasons), NOT 2020-2025.** 2020
-  has zero gradeable games -- 415 of 489 have no opening line from any book at
-  all, confirmed via direct query. This is a flat data-coverage hole, distinct
-  from (though partly compounded by) 2020's COVID-shortened, late-starting
-  schedule. Any future reference to "the backtest window" should say
-  2021-2025.
-- **Opening-line coverage is thin and single-book-patched.** CFBD's historical
-  archive has no true consensus opener at all (0 rows, any season) and
-  consensus closers collapse after 2022 (29 rows in 2023, 0 in 2024/2025).
-  The harness falls back to a single book (flagged, never silently relabeled
-  as consensus -- see ARCHITECTURE.md §14), but this means **CLV numbers rest
-  on thinner data than ATS%/ROI** and should be read as directional, not as
-  tight as the win-rate columns next to them.
-- **The edge≥3 threshold is not demonstrably adding signal yet.** The
-  bet-subset beats the all-predictions ATS% in only 1 of 5 seasons (2024,
-  55.2% vs. its own 52.1%); 2021/2023/2025 run at or below their
-  all-predictions number, 2022 is roughly flat. One hot season out of five is
-  not validation of the threshold -- `EDGE_THRESHOLD = 3.0` remains an
-  unvalidated placeholder (consistent with §8b's caution against trusting an
-  unproven edge estimate with money), not a tuned value.
+### Expectation-setting (so the first result doesn't mislead)
+The EPA baseline will likely land ~50% ATS, maybe slightly under. **That is not
+failure — it's an efficient market and a deliberately dumb model.** The
+baseline's job is to be the honest floor, not to be profitable. If EPA-alone
+gets 50.5% and the first real feature moves it to 51.5%, that 1-point gain is
+real signal — visible ONLY because the baseline gave a clean reference. A
+*profitable* baseline would be suspicious: more likely a lookahead bug than
+genuine edge, given how efficient CFB spread markets are.
+
+### Early-season handling (weeks 1–3)  ✅ include + flag, and the flag must ACT
+Include early weeks — they're real betting weeks; dropping them measures a season
+you don't actually play (false cleanliness). But EPA off 1–2 games is near-noise
+(cupcake opener → looks elite; tough opener → looks broken). So:
+- Early-season games (team has < ~3–4 prior games of EPA sample) get confidence
+  **capped**, which under §8b sizing means smaller stakes or below-threshold
+  no-bet. The thinness of the data mechanically produces smaller bets. The flag
+  FEEDS bet/no-bet and sizing — it is not a decorative report column.
+- **Week 1 input (no prior-season-week EPA exists) — ✅ DECIDED (2026-08-01), see ARCHITECTURE.md §23.**
+  Took option (a): prior season's final EPA as a rough prior
+  (`backtest_harness.get_prior_season_final_stats()`), confidence capped —
+  a week 1 pick can never read as "standard," regardless of edge size,
+  because the input itself is known-weak (roster turnover, transfer
+  portal), not because the edge looks large. Explicit in the card output
+  (`uses_prior_season_data`, `flagged_prior_season_data`) and on the
+  dashboard (a dedicated banner, not just the per-row pill) — never
+  silent. Re-ran the full backtest after wiring this in rather than
+  assuming it was neutral: all-predictions ATS unchanged (51.1%), bet-subset
+  moved 51.3%→51.1% (closer to all-predictions, not further — shrinks the
+  gap §14 already flagged as not real signal). Conclusion unchanged: every
+  slice still sits at or below the 52.4% breakeven line.
 
 ---
 
@@ -314,6 +334,33 @@ Three facts learned while running it, recorded here as known limitations, not to
 - Full slate: every lined FBS game with side, confidence (1–5), rationale.
 - Ranked **Top 5** highest-edge plays.
 - Clear separation of recommended-bets vs. contest-only/no-bet (per §5 field).
+
+### Confidence-pool pick'em league (SECOND contest consumer)
+A separate weekly league: pick 5 games ATS, rank them 5-4-3-2-1, standard
+confidence-pool scoring (5 pts for the #1-ranked pick if correct, down to 1 pt
+for the #5). Choose any 5 from ~90% of the slate. Lines fix ~Tuesday and don't
+move (same locked-line pattern as SplashSports §3).
+
+**This is a NEW CONSUMER of model output, not a second model.** The model
+produces per-game predictions/edges once; SplashSports, this pick'em ranking,
+and bankroll bets are all different *views* of that same output. Build it as a
+thin layer that reads existing per-game predictions and formats them — never a
+parallel prediction engine that could drift from the main one.
+
+- **Upload flow:** ingest the ~Tuesday fixed lines (CSV or paste: game +
+  spread), join to predictions via the existing team-name resolver, evaluate
+  every allowed game against THOSE locked numbers (not live market).
+- **v1 ranking:** rank all allowed games by edge (predicted margin − spread),
+  take the 5 biggest edges, assign rank 5 to the largest down to rank 1 to the
+  fifth. Simple, honest, reasonable for a first version.
+- **Known refinement (defer until calibration data exists):** the *optimal*
+  confidence-pool ranking weighs edge SIZE against edge RELIABILITY, not raw
+  size alone. A big-but-shaky 10pt edge is riskier to stake the max 5-point rank
+  on than a confident 6pt edge. But "biggest edge = most likely to hit" is an
+  ASSUMPTION until the audit proves edge sizes are calibrated (does a projected
+  10pt edge actually win more than a projected 5pt edge?). v1 ranks by raw edge;
+  refine to weight reliability once real calibration data exists. Same pattern as
+  everything else: honest simple version first, sophistication earned by data.
 
 ### Post-game audit (goal #8) — a first-class output, not an afterthought
 After each week, produce:
@@ -402,38 +449,8 @@ Added one at a time, each measured against the baseline:
 - Coach ATS situational splits: as underdog, off a bye, first year at a new
   program. (Raw career coach ATS% is mostly noise / small-sample — use
   *situational* splits with a plausible mechanism, not overall records.)
-- ~~Rest / schedule spots (bye weeks, short weeks, 3rd straight road game).~~
-  **Tested 2026-07-31, REJECTED** — see ARCHITECTURE.md §17. Days-of-rest
-  differential + bye-week-flag differential, computed point-in-time from
-  `games.start_date` (dates confirmed 100% reliable, 0 NULLs, before
-  building). Failed all three criteria — the first feature to fail
-  coefficient-sign stability too, not just McNemar/per-season: the
-  rest/bye coefficient signs flipped across seasons
-  (`{(-1,1), (1,-1), (-1,-1)}` observed), unlike EPA's and even the
-  two rejected performance stats' consistently-signed coefficients.
-  McNemar was the closest of the three features tested so far (p=0.20
-  on 87 disagreement games, vs. 0.82 and 1.00 for success rate/havoc)
-  and improved in 3/5 seasons (also the best showing yet) — still a
-  clear miss against the pre-registered bar, not treated as a near-pass.
-  Building this also surfaced and fixed a real, structural data gap:
-  `games` is intentionally FBS-only, so 204 (team, season, week) cases
-  had no computable rest because the team's actual prior game was an
-  FBS-vs-FCS buy game not in the archive. Recovered via a small,
-  bounded, time-boxed CFBD query (dates only, not full game rows) —
-  see ARCHITECTURE.md §17 for the full investigation.
+- Rest / schedule spots (bye weeks, short weeks, 3rd straight road game).
 - Rivalry / letdown / look-ahead motivational spots.
-- ~~Success rate + havoc (once weekly-backfilled per §3).~~ Both **tested**
-  **2026-07-30, both REJECTED** — see the feature-test log in
-  ARCHITECTURE.md §15 (success rate) and §16 (havoc). Success rate:
-  failed McNemar (p=0.82 on 301 disagreement games) and the per-season
-  criterion (improved in only 2/5 seasons); only coefficient-sign
-  stability passed. Havoc: same outcome, even more decisively on
-  McNemar (60 vs. 59 disagreement wins, p=1.00 — indistinguishable
-  from a coin flip); improved in only 2/5 seasons; only coefficient
-  sign passed. The owner's a-priori case for havoc (a more
-  disruption-specific mechanism than success rate) did not pan out —
-  the data decided against it, which the question itself anticipated
-  as a real possibility. Two independent EPA-derived-stat candidates
-  now rejected by the same bar.
+- Success rate + havoc (once weekly-backfilled per §3).
 - Book-name normalization (DraftKings/Draft Kings, 3× Caesars labels) — needed
   before any "track one book's line over time" analysis.

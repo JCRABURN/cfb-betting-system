@@ -86,6 +86,88 @@ def test_ignores_non_point_in_time_source(temp_db):
     assert result is None
 
 
+def test_get_team_stats_as_of_marks_not_a_fallback(temp_db):
+    conn = temp_db.get_connection()
+    insert_stats(conn, 2023, 5, "Georgia", 0.10)
+    conn.commit()
+    result = bh.get_team_stats_as_of(conn, "Georgia", 2023, 9)
+    conn.close()
+    assert result["is_prior_season_fallback"] is False
+    assert result["as_of_season"] == 2023
+
+
+# ---------------------------------------------------------------------------
+# get_prior_season_final_stats -- MODEL_DESIGN.md §6's week 1 fallback
+# ---------------------------------------------------------------------------
+
+def test_prior_season_final_stats_returns_latest_week_of_prior_season(temp_db):
+    conn = temp_db.get_connection()
+    insert_stats(conn, 2022, 10, "Georgia", 0.20)
+    insert_stats(conn, 2022, 15, "Georgia", 0.35)  # the actual final week
+    conn.commit()
+    result = bh.get_prior_season_final_stats(conn, "Georgia", 2023)
+    conn.close()
+    assert result["offense_epa_play"] == 0.35
+    assert result["as_of_week"] == 15
+    assert result["as_of_season"] == 2022
+    assert result["is_prior_season_fallback"] is True
+
+
+def test_prior_season_final_stats_none_when_team_has_no_prior_season_data(temp_db):
+    """A team's first-ever FBS season -- a genuine gap, not something to
+    paper over with fabricated data."""
+    conn = temp_db.get_connection()
+    result = bh.get_prior_season_final_stats(conn, "Brand New FCS Callup", 2023)
+    conn.close()
+    assert result is None
+
+
+def test_prior_season_final_stats_ignores_non_point_in_time_source(temp_db):
+    conn = temp_db.get_connection()
+    insert_stats(conn, 2022, None, "Georgia", 0.99, source="cfbd_historical_backfill")
+    conn.commit()
+    result = bh.get_prior_season_final_stats(conn, "Georgia", 2023)
+    conn.close()
+    assert result is None
+
+
+# ---------------------------------------------------------------------------
+# get_pregame_stats -- week 1 fallback wiring (the actual §6 decision)
+# ---------------------------------------------------------------------------
+
+def test_get_pregame_stats_week1_falls_back_to_prior_season(temp_db):
+    conn = temp_db.get_connection()
+    insert_stats(conn, 2022, 15, "Georgia", 0.35)
+    insert_stats(conn, 2022, 15, "Kentucky", 0.05)
+    conn.commit()
+    package = bh.get_pregame_stats(conn, "Georgia", "Kentucky", 2023, 1, "2023-08-26T00:00:00.000Z")
+    conn.close()
+    assert package is not None
+    assert package["home_stats"]["offense_epa_play"] == 0.35
+    assert package["home_stats"]["is_prior_season_fallback"] is True
+    assert package["away_stats"]["is_prior_season_fallback"] is True
+
+
+def test_get_pregame_stats_week1_skips_when_no_prior_season_data_either(temp_db):
+    conn = temp_db.get_connection()
+    package = bh.get_pregame_stats(conn, "Nobody FC", "Nobody Else FC", 2023, 1, "2023-08-26T00:00:00.000Z")
+    conn.close()
+    assert package is None
+
+
+def test_get_pregame_stats_week2_does_not_use_prior_season_fallback(temp_db):
+    """The fallback is week 1 ONLY -- a week 2 game with no in-season data
+    yet (bye in week 1, or a data gap) must still be skipped, not silently
+    padded with prior-season numbers."""
+    conn = temp_db.get_connection()
+    insert_stats(conn, 2022, 15, "Georgia", 0.35)
+    insert_stats(conn, 2022, 15, "Kentucky", 0.05)
+    conn.commit()
+    package = bh.get_pregame_stats(conn, "Georgia", "Kentucky", 2023, 2, "2023-09-02T00:00:00.000Z")
+    conn.close()
+    assert package is None
+
+
 # ---------------------------------------------------------------------------
 # get_days_rest -- the situational (date-based) accessor
 # ---------------------------------------------------------------------------

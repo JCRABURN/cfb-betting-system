@@ -163,3 +163,32 @@ def test_render_dashboard_no_disclaimer_missing_even_with_full_slate():
     html = bd.render_dashboard(2026, 1, card, None, None, None, _healths(), "2026-08-04T14:00:00")
     assert "has not demonstrated a betting edge" in html
     assert "low confidence" in html
+
+
+def test_render_dashboard_shows_prior_season_banner_and_row_pill():
+    card = {
+        "games": [
+            {"away_team": "A", "home_team": "B", "side": "B", "edge": 4.0,
+             "confidence": "low_confidence_prior_season_data", "uses_prior_season_data": True},
+            {"away_team": "C", "home_team": "D", "side": "C", "edge": 5.0,
+             "confidence": "standard", "uses_prior_season_data": False},
+        ],
+        "flagged_prior_season_data": [
+            {"away_team": "A", "home_team": "B", "side": "B", "edge": 4.0,
+             "confidence": "low_confidence_prior_season_data", "uses_prior_season_data": True},
+        ],
+    }
+    html = bd.render_dashboard(2026, 1, card, None, None, None, _healths(), "2026-08-04T14:00:00")
+    assert "1 pick this week uses prior-season EPA" in html
+    assert "prior-season data" in html  # the per-row pill label
+    assert "MODEL_DESIGN.md &sect;6" in html
+
+
+def test_render_dashboard_no_prior_season_banner_when_nothing_flagged():
+    card = {
+        "games": [{"away_team": "A", "home_team": "B", "side": "B", "edge": 4.0,
+                    "confidence": "standard", "uses_prior_season_data": False}],
+        "flagged_prior_season_data": [],
+    }
+    html = bd.render_dashboard(2026, 1, card, None, None, None, _healths(), "2026-08-04T14:00:00")
+    assert "prior-season EPA" not in html

@@ -307,21 +307,48 @@ def _pool_drift_rows(pool):
     return "\n".join(rows)
 
 
+_CONFIDENCE_DISPLAY = {
+    "low_confidence_large_edge": ("low-conf", "low confidence"),
+    "low_confidence_prior_season_data": ("low-conf", "prior-season data"),
+    "standard": ("standard", "standard"),
+}
+
+
 def _model_picks_rows(card):
     if not card or not card["games"]:
         return '<tr><td colspan="4"><div class="empty-state">No card generated yet this week.</div></td></tr>'
     rows = []
     for g in card["games"]:
-        conf_class = "low-conf" if g["confidence"] == "low_confidence_large_edge" else "standard"
-        conf_label = "low confidence" if g["confidence"] == "low_confidence_large_edge" else "standard"
+        conf_class, conf_label = _CONFIDENCE_DISPLAY[g["confidence"]]
+        prior_season_note = (
+            ' <span class="pill flip" title="Uses prior-season final EPA -- no in-season data exists yet (Week 1)">week 1</span>'
+            if g.get("uses_prior_season_data") else ""
+        )
         rows.append(
             f'<tr><td class="matchup"><span class="away">{_esc(g["away_team"])}</span>'
             f'<span class="at">@</span>{_esc(g["home_team"])}</td>'
             f'<td>{_esc(g["side"])}</td>'
             f'<td class="num mono">{g["edge"]:.1f}</td>'
-            f'<td class="num"><span class="pill {conf_class}">{conf_label}</span></td></tr>'
+            f'<td class="num"><span class="pill {conf_class}">{conf_label}</span>{prior_season_note}</td></tr>'
         )
     return "\n".join(rows)
+
+
+def _prior_season_banner_html(card):
+    """Explicit, visible callout -- not just the per-row pill -- per
+    MODEL_DESIGN.md §6: week 1 games use prior-season-final EPA (roster
+    turnover, transfer portal, a full offseason of change since the data
+    was current) as a fallback input, and that must be obvious at a
+    glance, not something a viewer has to notice row by row."""
+    if not card or not card.get("flagged_prior_season_data"):
+        return ""
+    n = len(card["flagged_prior_season_data"])
+    return (
+        '<div class="stale-banner"><span class="mark">&#9888;</span>'
+        f'<span><strong>{n} pick{"s" if n != 1 else ""} this week use{"s" if n == 1 else ""} prior-season EPA</strong> '
+        "-- no in-season data can exist yet this early (Week 1), so these use last season's final numbers "
+        "as a fallback input (MODEL_DESIGN.md &sect;6). Confidence is capped accordingly, not standard.</span></div>"
+    )
 
 
 def render_dashboard(season, week, card, gambling, pool, ledger, healths, generated_at):
@@ -338,6 +365,7 @@ def render_dashboard(season, week, card, gambling, pool, ledger, healths, genera
     market_banner = _stale_banner_html("Market Movement", healths["gambling_view"])
     pool_banner = _stale_banner_html("Pool Drift", healths["pool_view"])
     model_banner = _stale_banner_html("Model Picks", healths["card_generator"])
+    prior_season_banner = _prior_season_banner_html(card)
 
     pool_rows = _pool_drift_rows(pool)
     if pool_rows is None:
@@ -437,6 +465,7 @@ def render_dashboard(season, week, card, gambling, pool, ledger, healths, genera
       <p><strong>This baseline has not demonstrated a betting edge over the market.</strong> Six independent tests &mdash; three candidate features, three structural fixes for its worst bucket &mdash; were all rejected against a pre-registered bar. Every edge bucket sits at or below the ~52.4% break-even line.</p>
       <p>The picks below are shown for reference, not as a recommendation. Large-edge picks are flagged low-confidence, not high &mdash; the model's biggest disagreements with the market are its <em>least</em> reliable, not its best.</p>
     </div></div>
+    {prior_season_banner}
     <div class="table-wrap"><table><thead><tr><th>Game</th><th>Side</th><th class="num">Edge</th><th class="num">Confidence</th></tr></thead>
     <tbody>{_model_picks_rows(card)}</tbody></table></div>
   </section>

@@ -783,3 +783,34 @@ Rendered a real page from 2024 week 10 data (published as an artifact for visual
 ### Tests
 
 38 new tests: `tests/test_post_game_audit.py` (13 — hook boundary cases, score persistence, grading, CLV, week-scoping), `tests/test_build_dashboard.py` (12 — health-state classification, ledger aggregation, HTML-shape smoke tests including "no backtest numbers leak into the real page"), plus 3 for `card_generator.persist_picks_to_db` (insert, field mapping, idempotency) and updates across the touched modules for the `fetch_stats` import path. 191 tests pass across the whole suite.
+
+## 23. Week 1 fallback: prior-season final EPA (2026-08-01)
+
+Implemented MODEL_DESIGN.md §6's deferred week 1 decision. Week 1 has no in-season EPA to predict from — `get_team_stats_as_of()` structurally always returns `None` for week 1 (no week-0 row can ever satisfy `week < 1`, for any team, any season), so every week 1 game was previously skipped outright (`missing_pregame_stats`). Per the option §6 already leaned toward: use the team's final `cfbd_point_in_time` snapshot from the *prior* season as a rough prior, with confidence heavily capped — roster turnover and the transfer portal make it a meaningfully weaker input than real in-season data, not an equivalent substitute.
+
+### `backtest_harness.get_prior_season_final_stats(conn, team, season)`
+
+Returns the latest `cfbd_point_in_time` row from `season - 1`, or `None` if the team has no data that season (a genuine gap — e.g. a team's first FBS season — left as a skip, not papered over). No lookahead risk: season-1 ended in full before season's week 1 kicked off, so this is strictly historical information, just a *weaker* one on relevance than real in-season data. `get_team_stats_as_of()`'s own return dict gained `is_prior_season_fallback`/`as_of_season` fields (always `False`/the current season) so both paths share one shape and callers can tell them apart without a second lookup.
+
+`get_pregame_stats()` — the single shared accessor `build_training_set()` (training) and `build_feature_package()`/`card_generator.build_card()` (prediction) all go through — now falls back to this for week 1 only, per side, independently. This means the fallback applies identically whether the game is being trained on, backtested, or live-carded: no separate live-only code path to drift out of sync with what was actually validated.
+
+### Card output: explicit, not silent (per the user's requirement)
+
+`card_generator.build_card()`: each game gets `uses_prior_season_data` (true if either team's stats came from the fallback), and `_assign_confidence()` now has a third state — `"low_confidence_prior_season_data"` — that takes priority over the existing edge-based check. A week 1 fallback game can never read as `"standard"`, regardless of how small its edge looks, because the *input* feeding that edge is already known-weak, not because the edge itself is large (a different, orthogonal reason for caution than `"low_confidence_large_edge"`, §19-20). A new `flagged_prior_season_data` list mirrors the existing `flagged_large_edge` pattern.
+
+`build_dashboard.py`: a dedicated banner (`_prior_season_banner_html()`) appears in the Model Picks section — separate from the per-row pill (relabeled `"prior-season data"` instead of the generic `"low confidence"` for this state, plus a `"week 1"` tag on the affected rows) — whenever any game is flagged, stating the count and citing §6 directly. Says nothing when nothing is flagged (no permanent clutter the other 15 weeks of the season).
+
+### Re-ran the full backtest rather than assuming this was neutral
+
+This changes both the training set (week 1 games are now includable) and the walk-forward prediction set (week 1 games of every predicted season are now gradeable), so the previously-committed baseline numbers needed re-verification, not an assumption that adding ~235 more games washes out:
+
+| | Before (skip week 1) | After (prior-season fallback) |
+|---|---|---|
+| All-predictions | n=3479, ATS 51.1%, ROI −2.5%, CLV +0.13 | n=3714, ATS 51.1%, ROI −2.4%, CLV +0.11 |
+| Bet-subset (edge≥3) | n=2427, ATS 51.3%, ROI −2.0%, CLV +0.17 | n=2618, ATS 51.1%, ROI −2.4%, CLV +0.14 |
+
+All-predictions ATS is unchanged to one decimal place. The bet-subset number moves down slightly (51.3% → 51.1%), landing closer to the all-predictions figure rather than further from it — if anything this shrinks the illusory gap between the two that §6/§14 already cautioned wasn't real signal. **The conclusion does not change**: every slice still sits at or below the 52.4% breakeven line. This is the honest floor with one more real betting week folded in, not a different result.
+
+### Tests
+
+13 new tests: 7 in `tests/test_backtest_harness.py` (`get_prior_season_final_stats` behavior, `get_pregame_stats`'s week-1-only fallback wiring, week-2 games confirmed NOT to get the fallback), 4 in `tests/test_card_generator.py` (confidence capped even at small edge, skip-not-fabricate when no prior-season data exists either, non-week-1 games never flagged), and 2 in `tests/test_build_dashboard.py` (the banner appears/doesn't appear correctly). 204 tests pass across the whole suite.
