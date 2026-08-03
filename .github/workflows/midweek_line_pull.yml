@@ -3,7 +3,7 @@ name: Midweek Line Pull
 on:
   schedule:
     - cron: '0 17 * * 4'  # Thursday ~noon CT (17:00 UTC) -- before Thursday night games
-    - cron: '0 15 * * 6'  # Saturday ~10am CT (15:00 UTC) -- before the bulk of Saturday's slate
+    - cron: '0 13 * * 6'  # Saturday ~8am CT (13:00 UTC) -- before the bulk of Saturday's slate
   workflow_dispatch:        # lets you trigger it manually anytime
 
 permissions:
