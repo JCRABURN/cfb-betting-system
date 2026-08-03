@@ -48,3 +48,8 @@ predicted edge vs. the market line, confidence level, and suggested unit size.
 ## Workflow
 - Work in phases. At the end of each phase, summarize what was built,
   what was verified, and what's next — then STOP and wait for approval
+- Push to origin after each approved commit — don't leave work
+  local-only. (Learned 2026-08-01: 16 commits sat local-only for the
+  entire session while GitHub kept running the old pre-session
+  workflow on its own schedule, diverging the remote history and
+  requiring a verified-safe force-push to reconcile.)
