@@ -48,16 +48,36 @@ def get_current_week():
     never worked at all until this was caught. Confirmed live: with
     year=2026, returns 200 and 16 calendar entries.
     """
-    url = f"{CFBD_BASE}/calendar"
-    resp = requests.get(url, headers=HEADERS, params={"year": datetime.utcnow().year})
-    resp.raise_for_status()
-    weeks = resp.json()
+    weeks = get_calendar(datetime.utcnow().year)
     now = datetime.utcnow().isoformat()
     for week in weeks:
         if week.get("firstGameStart", "") <= now <= week.get("lastGameStart", "9999"):
             return week.get("week", 1), datetime.utcnow().year
     print("No active week found in calendar, defaulting to Week 1 (offseason)")
     return 1, datetime.utcnow().year
+
+
+def get_calendar(year):
+    """Raw /calendar response for a season -- one entry per week, each with
+    firstGameStart/lastGameStart (ISO-8601 UTC). Shared by get_current_week()
+    (find which week `now` falls in) and get_week_date_range() (find a
+    SPECIFIC week's boundaries, e.g. for fetch_odds.py to filter a live
+    odds pull down to just that week's games -- see fetch_odds.py's
+    filter_by_week(), added 2026-08-04 after mislabeled future-game rows
+    were found polluting week 1's betting_lines)."""
+    resp = requests.get(f"{CFBD_BASE}/calendar", headers=HEADERS, params={"year": year})
+    resp.raise_for_status()
+    return resp.json()
+
+
+def get_week_date_range(year, week):
+    """(firstGameStart, lastGameStart) for one specific week, or None if
+    that week isn't in the calendar (bad week number, or the year has no
+    calendar data at all)."""
+    for w in get_calendar(year):
+        if w.get("week") == week:
+            return w.get("firstGameStart"), w.get("lastGameStart")
+    return None
 
 
 def fetch_games(year, week):

@@ -814,3 +814,29 @@ All-predictions ATS is unchanged to one decimal place. The bet-subset number mov
 ### Tests
 
 13 new tests: 7 in `tests/test_backtest_harness.py` (`get_prior_season_final_stats` behavior, `get_pregame_stats`'s week-1-only fallback wiring, week-2 games confirmed NOT to get the fallback), 4 in `tests/test_card_generator.py` (confidence capped even at small edge, skip-not-fabricate when no prior-season data exists either, non-week-1 games never flagged), and 2 in `tests/test_build_dashboard.py` (the banner appears/doesn't appear correctly). 204 tests pass across the whole suite.
+
+## 24. Three bugs found by querying the real Week 1 data (2026-08-04)
+
+The real automated run in §22/§23 gave the first real `betting_lines` data to actually inspect. Doing so surfaced three issues, none visible from synthetic tests alone.
+
+### Bug 1: `fetch_odds.py` was writing other weeks' games into this week
+
+The Odds API returns every CFB game it currently has a line for, including marquee matchups books price months early (Ohio State–Michigan, Texas–Oklahoma, etc., already listed in August). `fetch_current_lines()` never filtered by date, and `persist_lines_to_db()` stamped everything with the CALLER's `week`/`year` regardless of when the game actually happens. Confirmed: **334 of 720 rows written for "week 1, 2026" were actually other weeks' games** — none joined to a real `game_id` (`find_game_id()` correctly scopes to the target week), so they sat as harmless-looking `game_id IS NULL` noise rather than corrupting anything visible, but they were real pollution in the persistent store.
+
+Fixed: `fetch_stats.get_calendar(year)` / `get_week_date_range(year, week)` (factored out of `get_current_week()`, which now calls the shared helper) give the target week's actual `firstGameStart`/`lastGameStart`. `fetch_odds.filter_by_week(games, first, last)` keeps only games whose `commence_time` falls inside that range; wired into `main()` right after the fetch, with a hard-fail if the date range can't be determined (writing everything unfiltered is exactly the bug this prevents, so silently skipping the filter isn't an option). Verified live against the real API: 126 games returned, 98 correctly kept for week 1, 28 correctly dropped (week 2 games already listed).
+
+**Cleanup of the 334 already-written rows was proposed, not run automatically** (see chat) — retroactively distinguishing "wrong week" from "genuine week-1 FCS buy game with an unresolvable opponent" needed a heuristic (`betting_lines` doesn't store `commence_time`, so it can't be re-derived directly): both sides of the pair already resolving to a real school in `teams` (158 rows, 35 matchups — cross-checked two against the real `games` table to confirm they're not a home/away-swap bug, e.g. Arkansas's real week-1 opponent is North Alabama, not Missouri) means wrong week; at least one side unresolved (176 rows) means a real week-1 FCS opponent, kept as-is.
+
+### Bug 2: The gambling view's "same book" was always the synthetic consensus row
+
+`fetch_odds.py` writes a `book='consensus'` row (an average across whichever books had a price) alongside real per-book rows. `backtest_harness.get_opening_line()` — which `gambling_view.py` was using to pick the "same book" to match — prefers `consensus` first when available, and it's always available for live-fetched games. So the carefully-built same-book discipline (§21) was, in practice, always comparing consensus-vs-consensus: correct in that it applies the same averaging method both times, but consensus's contributing basket of books can change between the opening pull and a later one (a book joins or drops out), which can look like real movement when it's really just a different set of books being averaged.
+
+Fixed: `line_utils.get_opening_line_real_book()` — same shape as `backtest_harness.get_opening_line()`, but tries `REAL_BOOK_PREFERENCE = ["draftkings", "fanduel", "betmgm"]` and never falls back to consensus. `gambling_view.py` now uses this instead of `backtest_harness.get_opening_line()`. Deliberately **not** a change to `backtest_harness.get_opening_line()` itself (that function's consensus-first behavior is load-bearing for the already-reported backtest numbers) or to `line_utils.get_latest_line()`'s default (still consensus-first, correct for `card_generator.py`/`pool_view.py`, which want the single best available number, not a same-book match) — consensus stays available where it's the right input, it just can't win the gambling view's same-book comparison anymore.
+
+### Bug 3: Caesars configured but never present
+
+Confirmed twice now (§18's live check, and this week's real full pull) — `caesars` never appears in any game's book listing despite being in `BOOKMAKERS`. Dropped it: `BOOKMAKERS = "draftkings,fanduel,betmgm"`, matching `REAL_BOOK_PREFERENCE` exactly. The config now states what's actually available instead of implying four-book coverage that doesn't exist.
+
+### Tests
+
+31 new tests: 6 in `tests/test_fetch_odds.py` (`filter_by_week` — inside range, months out, before range, exact boundaries, missing `commence_time`, mixed slate), 4 in `tests/test_line_utils.py` (`get_opening_line_real_book` — ignores consensus, preference order, falls back within real books, `None` when only consensus/historical books exist), and the existing `tests/test_gambling_view.py` suite rewritten around real book names with 3 new cases (prefers a real book over consensus, preference order, skip when only consensus/historical books exist). 217 tests pass across the whole suite.

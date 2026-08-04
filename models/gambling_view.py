@@ -13,13 +13,20 @@ itself has moved, which the user reads and decides on independently. Do
 not add a model-based recommendation to this view without re-deciding
 that call explicitly -- it was deliberate, not an oversight.
 
-Same-book matching, not consensus-vs-single-book: backtest_harness.
-get_opening_line() returns the book its opener actually came from;
-line_utils.get_latest_line(..., prefer_book=<that book>) tries that SAME
-book's latest number first. Comparing two different books' numbers would
-show "drift" that's really just two books disagreeing with each other, not
-real market movement -- exactly the same-book discipline the user
-specifically called for.
+Same-book matching, not consensus-vs-single-book: line_utils.
+get_opening_line_real_book() returns a REAL book (never the synthetic
+'consensus' row -- see that function's docstring, added 2026-08-04:
+consensus is an average over whichever books had a price at that moment,
+and a changing basket can look like movement that isn't real); get_latest_
+line(..., prefer_book=<that book>) tries that SAME book's latest number
+first. Comparing two different books' numbers -- or two different-basket
+consensus numbers -- would show "drift" that's really just books
+disagreeing with each other, not real market movement -- exactly the
+same-book discipline the user specifically called for.
+
+Deliberately does NOT use backtest_harness.get_opening_line() (which
+prefers consensus) -- that function's behavior is load-bearing for the
+already-reported backtest numbers and must not change for this view's sake.
 """
 
 import os
@@ -30,26 +37,26 @@ sys.path.insert(0, _ROOT)
 sys.path.insert(0, os.path.join(_ROOT, "data"))
 import db
 import fetch_stats
-import backtest_harness as bh
-from line_utils import list_all_games, get_latest_line
+from line_utils import list_all_games, get_latest_line, get_opening_line_real_book
 
 
 def build_gambling_view(conn, season, week):
-    """Every lined game for (season, week) with an opening line, showing
-    market movement from open to the latest available number. Games with
-    no opening line, or no later line at all, are skipped (reason noted)
-    rather than silently dropped. Sorted by movement magnitude, descending
+    """Every lined game for (season, week) with a REAL-book opening line,
+    showing market movement from open to the latest available number.
+    Games with no opening line from any of the three real books
+    (REAL_BOOK_PREFERENCE), or no later line at all, are skipped (reason
+    noted) rather than silently dropped. Sorted by movement magnitude, descending
     -- the biggest market moves are the actual signal this view exists to
     surface."""
     entries = []
     skipped = []
 
     for game_id, home_team, away_team, start_date in list_all_games(conn, season, week):
-        opening = bh.get_opening_line(conn, game_id)
+        opening = get_opening_line_real_book(conn, game_id)
         if opening is None:
             skipped.append({
                 "game_id": game_id, "home_team": home_team, "away_team": away_team,
-                "reason": "no_opening_line",
+                "reason": "no_real_book_opening_line",
             })
             continue
 

@@ -1,4 +1,4 @@
-from fetch_odds import resolve_school_name, has_games_this_week
+from fetch_odds import resolve_school_name, has_games_this_week, filter_by_week
 
 SCHOOLS = [
     "TCU", "USC", "NC State", "Ohio", "Ohio State", "Miami", "Miami (OH)",
@@ -92,3 +92,58 @@ def test_has_games_this_week_is_specific_to_season_and_week(temp_db):
     assert has_games_this_week(conn, 2026, 4) is False  # different week
     assert has_games_this_week(conn, 2025, 3) is False  # different season
     conn.close()
+
+
+# ---------------------------------------------------------------------------
+# filter_by_week -- keeps only games whose commence_time is inside the
+# target week's actual date range (added 2026-08-04 after mislabeled
+# future-game rows were found polluting week 1's betting_lines)
+# ---------------------------------------------------------------------------
+
+WEEK1_START = "2026-08-27T07:00:00Z"
+WEEK1_END = "2026-09-02T06:59:00Z"
+
+
+def make_game(commence_time, home="A", away="B"):
+    return {"game_id": "x", "home_team": home, "away_team": away, "commence_time": commence_time}
+
+
+def test_filter_by_week_keeps_games_inside_the_range():
+    games = [make_game("2026-08-29T16:00:00Z")]
+    result = filter_by_week(games, WEEK1_START, WEEK1_END)
+    assert result == games
+
+
+def test_filter_by_week_drops_games_months_out():
+    games = [make_game("2026-11-28T17:00:00Z", "Ohio State", "Michigan")]
+    result = filter_by_week(games, WEEK1_START, WEEK1_END)
+    assert result == []
+
+
+def test_filter_by_week_drops_games_before_the_range():
+    games = [make_game("2026-08-01T00:00:00Z")]
+    result = filter_by_week(games, WEEK1_START, WEEK1_END)
+    assert result == []
+
+
+def test_filter_by_week_keeps_games_exactly_at_the_boundaries():
+    games = [make_game(WEEK1_START), make_game(WEEK1_END)]
+    result = filter_by_week(games, WEEK1_START, WEEK1_END)
+    assert len(result) == 2
+
+
+def test_filter_by_week_drops_games_with_no_commence_time():
+    games = [make_game(None)]
+    result = filter_by_week(games, WEEK1_START, WEEK1_END)
+    assert result == []
+
+
+def test_filter_by_week_mixed_slate_keeps_only_the_current_week():
+    games = [
+        make_game("2026-08-29T16:00:00Z", "TCU", "UNC"),
+        make_game("2026-11-28T17:00:00Z", "Ohio State", "Michigan"),
+        make_game("2026-10-04T19:00:00Z", "Texas", "Oklahoma"),
+    ]
+    result = filter_by_week(games, WEEK1_START, WEEK1_END)
+    assert len(result) == 1
+    assert result[0]["home_team"] == "TCU"

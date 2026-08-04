@@ -81,3 +81,61 @@ def test_omitting_prefer_book_still_prefers_consensus(temp_db):
 
     assert line["book"] == "consensus"
     assert line["home_spread"] == -3.5
+
+
+# ---------------------------------------------------------------------------
+# get_opening_line_real_book -- built 2026-08-04 for gambling_view.py's
+# same-book comparison, deliberately never prefers 'consensus'
+# ---------------------------------------------------------------------------
+
+def test_real_book_opener_ignores_consensus_even_when_present(temp_db):
+    conn = temp_db.get_connection()
+    insert_game(conn, 1, 2023, 5, "X", "Y")
+    insert_line(conn, 1, 2023, 5, "X", "Y", home_spread=-3.2, line_type="opening", book="consensus")
+    insert_line(conn, 1, 2023, 5, "X", "Y", home_spread=-3.0, line_type="opening", book="draftkings")
+    conn.commit()
+
+    line = lu.get_opening_line_real_book(conn, 1)
+    conn.close()
+
+    assert line["book"] == "draftkings"
+    assert line["home_spread"] == -3.0
+
+
+def test_real_book_opener_follows_preference_order(temp_db):
+    conn = temp_db.get_connection()
+    insert_game(conn, 1, 2023, 5, "X", "Y")
+    insert_line(conn, 1, 2023, 5, "X", "Y", home_spread=-3.0, line_type="opening", book="betmgm")
+    insert_line(conn, 1, 2023, 5, "X", "Y", home_spread=-3.2, line_type="opening", book="fanduel")
+    insert_line(conn, 1, 2023, 5, "X", "Y", home_spread=-3.5, line_type="opening", book="draftkings")
+    conn.commit()
+
+    line = lu.get_opening_line_real_book(conn, 1)
+    conn.close()
+
+    assert line["book"] == "draftkings"
+
+
+def test_real_book_opener_falls_back_when_first_preference_missing(temp_db):
+    conn = temp_db.get_connection()
+    insert_game(conn, 1, 2023, 5, "X", "Y")
+    insert_line(conn, 1, 2023, 5, "X", "Y", home_spread=-3.0, line_type="opening", book="betmgm")
+    conn.commit()
+
+    line = lu.get_opening_line_real_book(conn, 1)
+    conn.close()
+
+    assert line["book"] == "betmgm"
+
+
+def test_real_book_opener_none_when_only_consensus_or_historical_books_exist(temp_db):
+    conn = temp_db.get_connection()
+    insert_game(conn, 1, 2023, 5, "X", "Y")
+    insert_line(conn, 1, 2023, 5, "X", "Y", home_spread=-3.0, line_type="opening", book="consensus")
+    insert_line(conn, 1, 2023, 5, "X", "Y", home_spread=-3.0, line_type="opening", book="Bovada")
+    conn.commit()
+
+    line = lu.get_opening_line_real_book(conn, 1)
+    conn.close()
+
+    assert line is None

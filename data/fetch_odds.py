@@ -34,7 +34,11 @@ ODDS_BASE = "https://api.the-odds-api.com/v4"
 SPORT = "americanfootball_ncaaf"
 REGIONS = "us"
 MARKETS = "spreads"
-BOOKMAKERS = "draftkings,fanduel,betmgm,caesars"
+# Caesars dropped 2026-08-04: confirmed live (twice -- once during initial
+# testing, again against a full real week 1 pull) that it never appears in
+# any game's book listing. Keeping it in the config implied 4-book coverage
+# that doesn't exist; three real books is what's actually available.
+BOOKMAKERS = "draftkings,fanduel,betmgm"
 
 # Known cases (found by spot-checking a live Odds API response against our
 # CFBD-sourced teams table, 2026-07-29) where CFBD's official school name
@@ -115,6 +119,28 @@ def fetch_current_lines():
         })
 
     return processed
+
+
+def filter_by_week(games, first_game_start, last_game_start):
+    """Keeps only games whose commence_time falls within the target week's
+    actual date range (from CFBD's /calendar, ISO-8601 UTC -- comparable as
+    strings the same way fetch_stats.get_current_week() already does).
+
+    The Odds API returns every CFB game it currently has a line for,
+    including marquee matchups months out that books price early (Ohio
+    State-Michigan, Texas-Oklahoma, etc., already listed in early August).
+    Without this filter, persist_lines_to_db() stamps those with the
+    CALLER's week/year regardless of when the game actually happens --
+    confirmed live: 334 rows for "week 1, 2026" that were actually other
+    weeks' games, none of which ever join to a real CFBD game_id since
+    find_game_id() correctly scopes its lookup to the target week (they end
+    up as harmless-looking but wrong NULL-game_id noise). A game missing
+    commence_time entirely is dropped, not kept by default -- can't verify
+    it belongs to this week, so it doesn't get to assume it does."""
+    return [
+        g for g in games
+        if g.get("commence_time") and first_game_start <= g["commence_time"] <= last_game_start
+    ]
 
 
 def load_opening_lines(week, year):
@@ -314,6 +340,26 @@ def main():
 
         print(f"Fetching odds for Week {week}, {year}")
         current_lines = fetch_current_lines()
+
+        # Drop games outside this week's actual date range (marquee
+        # matchups months out that the Odds API already has lines for --
+        # see filter_by_week()'s docstring). Hard-fail rather than silently
+        # skip filtering if the range can't be determined: writing
+        # everything unfiltered is exactly the bug this exists to prevent.
+        date_range = fetch_stats.get_week_date_range(year, week)
+        if date_range is None:
+            raise RuntimeError(
+                f"No calendar date range found for Week {week}, {year} -- "
+                f"refusing to write odds without a week boundary to filter by."
+            )
+        first_game_start, last_game_start = date_range
+        before = len(current_lines)
+        current_lines = filter_by_week(current_lines, first_game_start, last_game_start)
+        dropped = before - len(current_lines)
+        if dropped:
+            print(f"Filtered out {dropped} game(s) outside Week {week}'s date range "
+                  f"({first_game_start} to {last_game_start}) -- other weeks' games "
+                  f"already listed by the Odds API.")
 
         # Save as opening lines if this is the first pull of the week --
         # checked against the DB, not a local file (see opening_line_recorded).
