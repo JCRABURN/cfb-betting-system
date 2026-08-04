@@ -9,6 +9,16 @@ on:
 permissions:
   contents: write
 
+# Shared across all three scheduled workflows (same group name in
+# weekly_report.yml/post_game_audit.yml) -- external review, accepted
+# 2026-08-04: all three read-modify-write the same committed data/cfb.db,
+# and two overlapping runs pushing at once is exactly what caused the push
+# races that made this necessary. cancel-in-progress: false queues a
+# second trigger instead of killing an in-flight run mid-write.
+concurrency:
+  group: cfb-betting-system-db
+  cancel-in-progress: false
+
 jobs:
   pull-odds:
     runs-on: ubuntu-latest
@@ -23,7 +33,29 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install requests
+        run: pip install -r requirements.txt
+
+      - name: Run test suite
+        # Hard gate (external review, accepted 2026-08-04): must pass
+        # BEFORE any fetch/generate/commit step runs. No `if: always()`
+        # here on purpose -- every step below that touches data/cfb.db
+        # checks `steps.tests.outcome == 'success'` explicitly, so a test
+        # failure blocks the mutation/commit path even though those later
+        # steps use `if: always()` for their own, separate resilience
+        # reasons (see their comments).
+        id: tests
+        run: python -m pytest -q
+
+      - name: Backup database before this run's mutations
+        # Pre-mutation snapshot (external review, accepted 2026-08-04):
+        # taken right after checkout, before any fetch step can touch
+        # data/cfb.db, so a bad run has something to restore from.
+        if: always() && steps.tests.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: cfb-db-backup-midweek-line-pull-${{ github.run_id }}
+          path: data/cfb.db
+          retention-days: 14
 
       - name: Fetch odds (line-drift snapshot -- does NOT re-run fetch_stats.py)
         # This week's games are already in the committed data/cfb.db from
@@ -32,13 +64,14 @@ jobs:
         # directly, so it doesn't need fetch_stats.py to run again here.
         # It still needs CFBD_API_KEY because get_current_week() calls
         # CFBD's /calendar endpoint.
+        if: steps.tests.outcome == 'success'
         env:
           CFBD_API_KEY: ${{ secrets.CFBD_API_KEY }}
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
         run: python data/fetch_odds.py
 
       - name: Market movement view
-        if: always()
+        if: always() && steps.tests.outcome == 'success'
         env:
           CFBD_API_KEY: ${{ secrets.CFBD_API_KEY }}
         run: python models/gambling_view.py
@@ -46,8 +79,11 @@ jobs:
       - name: Pool drift view
         # No-op (prints a message, exits 0) if you haven't committed a
         # data/pool_picks/week_{week}_{season}.csv for this week yet --
-        # not an error, just nothing to compare against.
-        if: always()
+        # not an error, just nothing to compare against. Also the step
+        # that ingests that CSV into contest_entries (external review,
+        # accepted 2026-08-04) -- build_dashboard.py below reads the
+        # ranking/drift view from that table, not the CSV directly.
+        if: always() && steps.tests.outcome == 'success'
         env:
           CFBD_API_KEY: ${{ secrets.CFBD_API_KEY }}
         run: python models/pool_view.py
@@ -56,17 +92,59 @@ jobs:
         # Runs even if an earlier step failed, so the published page can
         # say so (stale banner, per-section health) instead of silently
         # keeping the last successful pull's numbers up with no indication
-        # anything broke.
-        if: always()
+        # anything broke. Still gated on the test suite itself having
+        # passed, though -- that failure mode isn't "one section stale,"
+        # it's "don't trust this code to touch the DB at all."
+        if: always() && steps.tests.outcome == 'success'
         env:
           CFBD_API_KEY: ${{ secrets.CFBD_API_KEY }}
         run: python models/build_dashboard.py
 
+      - name: Verify database integrity
+        # PRAGMA integrity_check before every commit of cfb.db (external
+        # review, accepted 2026-08-04): hard-fails the run (no `|| true`)
+        # if the committed DB file would be corrupt -- a corrupted DB must
+        # never be pushed, since git history would bake the corruption in
+        # as the new baseline for every future checkout.
+        id: integrity
+        if: always() && steps.tests.outcome == 'success'
+        run: |
+          python -c "
+          import sys
+          sys.path.insert(0, '.')
+          import db
+          ok = db.integrity_check()
+          print('PRAGMA integrity_check:', 'ok' if ok else 'FAILED')
+          sys.exit(0 if ok else 1)
+          "
+
       - name: Commit updated lines and dashboard
-        if: always()
+        if: always() && steps.tests.outcome == 'success' && steps.integrity.outcome == 'success'
         run: |
           git config user.name "cfb-bot"
           git config user.email "bot@cfb-betting-system"
           git add docs/ data/cfb.db
-          git diff --staged --quiet || git commit -m "Midweek line pull $(date +'%Y-%m-%d %H:%M UTC')"
-          git push
+          if git diff --staged --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+          git commit -m "Midweek line pull $(date +'%Y-%m-%d %H:%M UTC')"
+
+          # Bounded pull --rebase / push retry (external review, accepted
+          # 2026-08-04): the shared concurrency group above already
+          # prevents overlapping runs of these three workflows, but a
+          # manual push to main between checkout and this step is still
+          # possible, so this stays a real (if now rare) safety net rather
+          # than a no-op.
+          max_attempts=5
+          for attempt in $(seq 1 $max_attempts); do
+            git pull --rebase origin main
+            if git push; then
+              break
+            fi
+            if [ "$attempt" -eq "$max_attempts" ]; then
+              echo "Push failed after $max_attempts attempts."
+              exit 1
+            fi
+            echo "Push rejected (attempt $attempt/$max_attempts), retrying..."
+          done

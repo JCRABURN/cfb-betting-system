@@ -10,6 +10,9 @@ Scripts in data/ and models/ import this via:
     import db
 """
 
+import gzip
+import hashlib
+import json
 import os
 import sqlite3
 from contextlib import contextmanager
@@ -210,6 +213,73 @@ CREATE TABLE IF NOT EXISTS supplemental_game_dates (
 
 CREATE INDEX IF NOT EXISTS idx_supplemental_game_dates_lookup
     ON supplemental_game_dates (team, season, week);
+
+-- Raw API response archival (external review, accepted 2026-08-04): every
+-- CFBD/Odds API request's raw response body, gzip-compressed (SQLite has
+-- no native compression). Purpose: when the next parser bug surfaces
+-- (every historical path in this project has had one), REPLAY the stored
+-- response through the fixed parser instead of re-spending API calls
+-- (Odds API's free tier is capped at 500/month) and guessing which rows a
+-- bad parse polluted. request_params must NEVER include an API key --
+-- both fetch_stats.py and fetch_odds.py redact it before storing.
+CREATE TABLE IF NOT EXISTS raw_payloads (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider TEXT NOT NULL,            -- 'cfbd' | 'the_odds_api'
+    endpoint TEXT NOT NULL,            -- e.g. '/games', '/ratings/sp'
+    request_params TEXT,               -- JSON-encoded query params, API keys redacted
+    requested_at TEXT NOT NULL,
+    http_status INTEGER,
+    checksum TEXT NOT NULL,            -- sha256 hex of the raw (uncompressed) response body
+    body_gzip BLOB NOT NULL,           -- gzip-compressed raw response body
+    parser_version TEXT NOT NULL,      -- which fetch module parser logic produced downstream rows from this
+    rows_accepted INTEGER DEFAULT 0,
+    rows_rejected INTEGER DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_raw_payloads_lookup
+    ON raw_payloads (provider, endpoint, requested_at);
+
+-- Immutable locked contest lines (external review, accepted 2026-08-04):
+-- the pool's own displayed number at the moment a pick was entered,
+-- inserted ONCE per (contest, season, week, game_id) and never updated in
+-- place by normal ingestion -- a pool's printed number is a historical
+-- fact about what was seen at lock time, not something that should
+-- silently drift if the CSV is re-ingested. correct_contest_entry() in
+-- pool_view.py is the ONLY sanctioned way to change a locked value.
+CREATE TABLE IF NOT EXISTS contest_entries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    contest TEXT NOT NULL,
+    season INTEGER NOT NULL,
+    week INTEGER NOT NULL,
+    game_id INTEGER NOT NULL,
+    raw_home_team TEXT NOT NULL,         -- exactly as typed/exported into the CSV
+    raw_away_team TEXT NOT NULL,
+    normalized_home_team TEXT NOT NULL,  -- resolved against `teams`, may equal raw_*
+    normalized_away_team TEXT NOT NULL,
+    locked_home_spread REAL NOT NULL,
+    picked_side TEXT NOT NULL,
+    locked_at TEXT NOT NULL,
+    source TEXT NOT NULL,                -- e.g. 'csv:data/pool_picks/week_1_2026.csv'
+    corrected_at TEXT,                   -- NULL unless correct_contest_entry() has touched this row
+    UNIQUE(contest, season, week, game_id)
+);
+
+-- Every correction to a contest_entries row: the ORIGINAL value, the new
+-- value, and why -- contest_entries itself is only ever UPDATEd by
+-- pool_view.correct_contest_entry(), and only after this ledger row is
+-- written first, so the original locked value is never lost, only
+-- superseded with an audit trail.
+CREATE TABLE IF NOT EXISTS contest_entry_corrections (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    original_entry_id INTEGER NOT NULL,
+    original_locked_home_spread REAL NOT NULL,
+    original_picked_side TEXT NOT NULL,
+    corrected_locked_home_spread REAL,
+    corrected_picked_side TEXT,
+    reason TEXT NOT NULL,
+    corrected_at TEXT NOT NULL,
+    FOREIGN KEY (original_entry_id) REFERENCES contest_entries(id)
+);
 """
 
 
@@ -248,6 +318,87 @@ def init_db():
         conn.commit()
     finally:
         conn.close()
+
+
+_SECRET_PARAM_MARKERS = ("key", "token", "secret", "password", "authorization")
+
+
+def _redact_params(params):
+    """Strips anything key/token/secret/password/authorization-shaped from
+    a params dict before it's stored. Applied unconditionally in
+    archive_raw_payload() regardless of provider -- CFBD's key lives in a
+    header, never in params, but the Odds API's `apiKey` IS a query param,
+    so this makes the safety a property of the archival function itself
+    rather than something every caller has to remember to do."""
+    if not params:
+        return {}
+    return {
+        k: ("<redacted>" if any(m in k.lower() for m in _SECRET_PARAM_MARKERS) else v)
+        for k, v in params.items()
+    }
+
+
+def archive_raw_payload(conn, provider, endpoint, params, response_text, http_status,
+                         parser_version, rows_accepted=0, rows_rejected=0):
+    """Stores one raw API response for later replay through a fixed parser
+    (external review, accepted 2026-08-04) -- see raw_payloads' schema
+    comment for the full rationale. Does NOT commit -- the caller's own
+    transaction/commit flow controls when this becomes durable, same as
+    every other write helper in this module.
+
+    response_text: the raw response body as a str (caller's own
+    `resp.text`, not `resp.json()` -- storing the exact bytes CFBD/the Odds
+    API actually sent, not a re-serialized version of the parsed object,
+    is the whole point of an archive meant for replay).
+
+    rows_accepted/rows_rejected are usually unknown at call time (the
+    caller archives BEFORE parsing, so an error response gets captured
+    too, not just successful ones) -- pass 0/0 here and call
+    update_raw_payload_counts() with the returned id once parsing
+    actually happens. Returns the new row's id."""
+    body_bytes = response_text.encode("utf-8")
+    checksum = hashlib.sha256(body_bytes).hexdigest()
+    body_gzip = gzip.compress(body_bytes)
+    cur = conn.execute(
+        """
+        INSERT INTO raw_payloads (
+            provider, endpoint, request_params, requested_at, http_status,
+            checksum, body_gzip, parser_version, rows_accepted, rows_rejected
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            provider, endpoint, json.dumps(_redact_params(params)),
+            datetime.utcnow().isoformat(), http_status, checksum, body_gzip,
+            parser_version, rows_accepted, rows_rejected,
+        ),
+    )
+    return cur.lastrowid
+
+
+def update_raw_payload_counts(conn, payload_id, rows_accepted=0, rows_rejected=0):
+    """Fills in accepted/rejected counts after parsing actually happens --
+    see archive_raw_payload()'s docstring for why these are usually
+    unknown at archival time."""
+    conn.execute(
+        "UPDATE raw_payloads SET rows_accepted = ?, rows_rejected = ? WHERE id = ?",
+        (rows_accepted, rows_rejected, payload_id),
+    )
+
+
+def integrity_check():
+    """Runs SQLite's own PRAGMA integrity_check against the committed DB.
+    Returns True iff the result is exactly ['ok'] -- any corruption message
+    (there can be several rows describing different problems) returns
+    False. Called before every commit of data/cfb.db in each workflow
+    (external review, accepted 2026-08-04): a corrupted DB must never be
+    pushed, since git history would then have the corruption baked in as
+    the new baseline for every future checkout."""
+    conn = get_connection()
+    try:
+        rows = conn.execute("PRAGMA integrity_check").fetchall()
+    finally:
+        conn.close()
+    return len(rows) == 1 and rows[0][0] == "ok"
 
 
 @contextmanager

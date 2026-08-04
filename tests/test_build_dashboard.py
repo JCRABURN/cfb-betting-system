@@ -138,7 +138,7 @@ def _healths(state="ok"):
 
 
 def test_render_dashboard_shows_empty_states_when_nothing_available():
-    html = bd.render_dashboard(2026, 1, None, None, None, None, _healths(), "2026-08-04T14:00:00")
+    html = bd.render_dashboard(2026, 1, None, None, None, None, None, _healths(), "2026-08-04T14:00:00")
     assert "No card generated yet" in html
     assert "No pool picks entered" in html
     assert "No games graded yet this season" in html
@@ -148,7 +148,7 @@ def test_render_dashboard_shows_empty_states_when_nothing_available():
 def test_render_dashboard_shows_stale_banner_when_source_is_stale():
     healths = _healths("ok")
     healths["gambling_view"] = {"state": "stale", "finished_at": None, "error": "Odds API unavailable"}
-    html = bd.render_dashboard(2026, 1, None, None, None, None, healths, "2026-08-04T14:00:00")
+    html = bd.render_dashboard(2026, 1, None, None, None, None, None, healths, "2026-08-04T14:00:00")
     assert "Market Movement may be out of date" in html
     assert "Odds API unavailable" in html
 
@@ -160,7 +160,7 @@ def test_render_dashboard_no_disclaimer_missing_even_with_full_slate():
             {"away_team": "C", "home_team": "D", "side": "C", "edge": 22.0, "confidence": "low_confidence_large_edge"},
         ]
     }
-    html = bd.render_dashboard(2026, 1, card, None, None, None, _healths(), "2026-08-04T14:00:00")
+    html = bd.render_dashboard(2026, 1, card, None, None, None, None, _healths(), "2026-08-04T14:00:00")
     assert "has not demonstrated a betting edge" in html
     assert "low confidence" in html
 
@@ -178,7 +178,7 @@ def test_render_dashboard_shows_prior_season_banner_and_row_pill():
              "confidence": "low_confidence_prior_season_data", "uses_prior_season_data": True},
         ],
     }
-    html = bd.render_dashboard(2026, 1, card, None, None, None, _healths(), "2026-08-04T14:00:00")
+    html = bd.render_dashboard(2026, 1, card, None, None, None, None, _healths(), "2026-08-04T14:00:00")
     assert "1 pick this week uses prior-season EPA" in html
     assert "prior-season data" in html  # the per-row pill label
     assert "MODEL_DESIGN.md &sect;6" in html
@@ -190,7 +190,7 @@ def test_render_dashboard_no_prior_season_banner_when_nothing_flagged():
                     "confidence": "standard", "uses_prior_season_data": False}],
         "flagged_prior_season_data": [],
     }
-    html = bd.render_dashboard(2026, 1, card, None, None, None, _healths(), "2026-08-04T14:00:00")
+    html = bd.render_dashboard(2026, 1, card, None, None, None, None, _healths(), "2026-08-04T14:00:00")
     assert "prior-season EPA" not in html
 
 
@@ -209,7 +209,7 @@ def test_render_dashboard_no_pick_extrapolation_hides_side_and_edge():
              "edge": 29.0, "confidence": "no_pick_extrapolation", "uses_prior_season_data": True},
         ],
     }
-    html = bd.render_dashboard(2026, 1, card, None, None, None, _healths(), "2026-08-04T14:00:00")
+    html = bd.render_dashboard(2026, 1, card, None, None, None, None, _healths(), "2026-08-04T14:00:00")
 
     # The matchup itself is still shown...
     assert "Massachusetts" in html
@@ -231,6 +231,30 @@ def test_render_dashboard_no_pick_extrapolation_does_not_appear_when_none_flagge
         ],
         "flagged_no_pick_extrapolation": [],
     }
-    html = bd.render_dashboard(2026, 1, card, None, None, None, _healths(), "2026-08-04T14:00:00")
+    html = bd.render_dashboard(2026, 1, card, None, None, None, None, _healths(), "2026-08-04T14:00:00")
     assert "No pick" not in html
+
+
+# ---------------------------------------------------------------------------
+# Ranked Pool Picks panel (external review, accepted 2026-08-04)
+# ---------------------------------------------------------------------------
+
+def test_render_dashboard_ranking_empty_state_when_nothing_ranked():
+    html = bd.render_dashboard(2026, 1, None, None, None, None, None, _healths(), "2026-08-04T14:00:00")
+    assert "Ranked Pool Picks" in html
+    assert "No ranked picks yet" in html
+
+
+def test_render_dashboard_ranking_renders_row():
+    ranked = [
+        {"rank": 1, "away_team": "Y", "home_team": "X", "picked_side": "X",
+         "signed_drift_vs_pick": 3.5, "edge": 6.0},
+        {"rank": 2, "away_team": "D", "home_team": "C", "picked_side": "C",
+         "signed_drift_vs_pick": 1.0, "edge": None},
+    ]
+    html = bd.render_dashboard(2026, 1, None, None, None, ranked, None, _healths(), "2026-08-04T14:00:00")
+    assert "+3.5" in html
+    assert ">6.0<" in html
+    assert "&mdash;" in html  # second row's edge is None, tiebreak absent
+    assert "No ranked picks yet" not in html
     assert "go further" not in html

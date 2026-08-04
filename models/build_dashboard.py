@@ -289,6 +289,29 @@ def _market_movement_rows(gambling):
     return "\n".join(rows)
 
 
+def _pool_ranking_rows(ranked):
+    """External review's one accepted gap, closed this project's own way
+    (2026-08-04): pool_view.rank_pool_picks() ranks the pool's OWN locked
+    picks by drift confirmation, model edge as tiebreak only. `edge` is
+    None for a pick with no matching (or a low-confidence, already-
+    excluded) card game -- rendered as an em-dash, not a fabricated
+    number."""
+    if not ranked:
+        return None
+    rows = []
+    for g in ranked:
+        edge_str = f'{g["edge"]:.1f}' if g["edge"] is not None else "&mdash;"
+        rows.append(
+            f'<tr><td class="num mono">{g["rank"]}</td>'
+            f'<td class="matchup"><span class="away">{_esc(g["away_team"])}</span>'
+            f'<span class="at">@</span>{_esc(g["home_team"])}</td>'
+            f'<td>{_esc(g["picked_side"])}</td>'
+            f'<td class="num mono">{g["signed_drift_vs_pick"]:+.1f}</td>'
+            f'<td class="num mono">{edge_str}</td></tr>'
+        )
+    return "\n".join(rows)
+
+
 def _pool_drift_rows(pool):
     if not pool or not pool["games"]:
         return None  # caller renders a dedicated empty state with setup instructions
@@ -379,7 +402,7 @@ def _prior_season_banner_html(card):
     )
 
 
-def render_dashboard(season, week, card, gambling, pool, ledger, healths, generated_at):
+def render_dashboard(season, week, card, gambling, pool, ranked, ledger, healths, generated_at):
     # Literal "·" here, not the &middot; entity -- _health_chip_html() runs
     # day_label through _esc(), which would escape the entity's own "&"
     # into "&amp;middot;" and render literally instead of as a dot (the bug
@@ -407,6 +430,20 @@ def render_dashboard(season, week, card, gambling, pool, ledger, healths, genera
             '<div class="table-wrap"><table><thead><tr><th>Game</th><th>Picked</th>'
             '<th>Pool line</th><th>Live line</th><th>Since you picked</th></tr></thead>'
             f"<tbody>{pool_rows}</tbody></table></div>"
+        )
+
+    ranking_rows = _pool_ranking_rows(ranked)
+    if ranking_rows is None:
+        ranking_body = (
+            '<div class="empty-state">No ranked picks yet &mdash; either no pool picks are '
+            "locked for this week, or every locked pick's matching model game is flagged "
+            "low-confidence and excluded from this board.</div>"
+        )
+    else:
+        ranking_body = (
+            '<div class="table-wrap"><table><thead><tr><th>Rank</th><th>Game</th><th>Picked</th>'
+            '<th>Drift toward pick</th><th>Edge (tiebreak only)</th></tr></thead>'
+            f"<tbody>{ranking_rows}</tbody></table></div>"
         )
 
     if ledger is None:
@@ -483,6 +520,15 @@ def render_dashboard(season, week, card, gambling, pool, ledger, healths, genera
     {pool_body}
   </section>
 
+  <section class="panel">
+    <div class="panel-head">
+      <div><div class="eyebrow headline">Headline &middot; Your Pool</div><h2 class="display">Ranked Pool Picks</h2></div>
+      <div class="asof mono">drift confirmation, edge as tiebreak only</div>
+    </div>
+    <p class="dek">Your own locked picks, ranked by how much the market has confirmed them since lock. Model edge only breaks a tie between two equally-confirmed picks &mdash; it never outranks the market read. Picks whose model game is flagged low-confidence are left off this board entirely.</p>
+    {ranking_body}
+  </section>
+
   <section class="panel secondary">
     <div class="panel-head">
       <div><div class="eyebrow">Reference Only &middot; Not a Recommendation</div><h2 class="display">Model Picks &mdash; EPA-Only Baseline</h2></div>
@@ -537,18 +583,18 @@ def main():
             card, _ = _try_build("card", card_generator.build_card, conn, season, week)
             gambling, _ = _try_build("gambling_view", gambling_view.build_gambling_view, conn, season, week)
 
-            csv_path = pool_view.default_csv_path(week, season)
+            entries = pool_view.load_pool_entries_from_db(conn, season, week)
             pool = None
-            if os.path.exists(csv_path):
-                entries = pool_view.load_pool_entries(csv_path)
+            if entries:
                 pool, _ = _try_build("pool_view", pool_view.build_pool_view, conn, entries)
+            ranked = pool_view.rank_pool_picks(pool, card) if pool else None
 
             ledger = build_season_ledger(conn, season)
         finally:
             conn.close()
 
         html = render_dashboard(
-            season, week, card, gambling, pool, ledger, healths,
+            season, week, card, gambling, pool, ranked, ledger, healths,
             generated_at=datetime.utcnow().isoformat(),
         )
 

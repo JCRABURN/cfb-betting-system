@@ -21,9 +21,18 @@ HEADERS = {
     "Content-Type": "application/json"
 }
 
+# Bumped whenever the parsing logic below (the camelCase/ppa/classification
+# field extraction, not the archival mechanism itself) changes in a way
+# that would matter for replaying an archived raw_payloads row through a
+# fixed parser (external review, accepted 2026-08-04).
+PARSER_VERSION = "fetch_stats.v1"
 
-def get_current_week():
-    """Return current CFB week.
+
+def get_current_week(conn=None):
+    """Return current CFB week. `conn`, if given, archives the /calendar
+    response it fetches (external review, accepted 2026-08-04) -- omit it
+    (the default) for the many callers that just want week/year and don't
+    need to duplicate archival work already done elsewhere in the same run.
 
     Deliberately does NOT catch calendar API failures and fall back to week 1.
     Week 1 always has real, completed games once the season has started, so a
@@ -48,7 +57,7 @@ def get_current_week():
     never worked at all until this was caught. Confirmed live: with
     year=2026, returns 200 and 16 calendar entries.
     """
-    weeks = get_calendar(datetime.utcnow().year)
+    weeks = get_calendar(datetime.utcnow().year, conn=conn)
     now = datetime.utcnow().isoformat()
     for week in weeks:
         if week.get("firstGameStart", "") <= now <= week.get("lastGameStart", "9999"):
@@ -57,30 +66,42 @@ def get_current_week():
     return 1, datetime.utcnow().year
 
 
-def get_calendar(year):
+def get_calendar(year, conn=None):
     """Raw /calendar response for a season -- one entry per week, each with
     firstGameStart/lastGameStart (ISO-8601 UTC). Shared by get_current_week()
     (find which week `now` falls in) and get_week_date_range() (find a
     SPECIFIC week's boundaries, e.g. for fetch_odds.py to filter a live
     odds pull down to just that week's games -- see fetch_odds.py's
     filter_by_week(), added 2026-08-04 after mislabeled future-game rows
-    were found polluting week 1's betting_lines)."""
+    were found polluting week 1's betting_lines).
+
+    Archives the raw response (status + body) when `conn` is given, BEFORE
+    raise_for_status() -- so even an error response gets captured for
+    post-mortem, not just successful ones (external review, accepted
+    2026-08-04)."""
     resp = requests.get(f"{CFBD_BASE}/calendar", headers=HEADERS, params={"year": year})
+    payload_id = None
+    if conn is not None:
+        payload_id = db.archive_raw_payload(conn, "cfbd", "/calendar", {"year": year},
+                                             resp.text, resp.status_code, PARSER_VERSION)
     resp.raise_for_status()
-    return resp.json()
+    weeks = resp.json()
+    if payload_id is not None:
+        db.update_raw_payload_counts(conn, payload_id, rows_accepted=len(weeks))
+    return weeks
 
 
-def get_week_date_range(year, week):
+def get_week_date_range(year, week, conn=None):
     """(firstGameStart, lastGameStart) for one specific week, or None if
     that week isn't in the calendar (bad week number, or the year has no
     calendar data at all)."""
-    for w in get_calendar(year):
+    for w in get_calendar(year, conn=conn):
         if w.get("week") == week:
             return w.get("firstGameStart"), w.get("lastGameStart")
     return None
 
 
-def fetch_games(year, week):
+def fetch_games(year, week, conn=None):
     """Get all FBS games for the given week.
 
     "division" is silently ignored by CFBD's /games endpoint (verified live
@@ -92,47 +113,75 @@ def fetch_games(year, week):
         url = f"{CFBD_BASE}/games"
         params = {"year": year, "week": week, "classification": "fbs"}
         resp = requests.get(url, headers=HEADERS, params=params)
+        payload_id = None
+        if conn is not None:
+            payload_id = db.archive_raw_payload(conn, "cfbd", "/games", params,
+                                                 resp.text, resp.status_code, PARSER_VERSION)
         resp.raise_for_status()
-        return resp.json()
+        games = resp.json()
+        if payload_id is not None:
+            db.update_raw_payload_counts(conn, payload_id, rows_accepted=len(games))
+        return games
     except Exception as e:
         print(f"Could not fetch games: {e}")
         return []
 
 
-def fetch_sp_ratings(year):
+def fetch_sp_ratings(year, conn=None):
     """Fetch SP+ ratings for all teams."""
     try:
         url = f"{CFBD_BASE}/ratings/sp"
         params = {"year": year}
         resp = requests.get(url, headers=HEADERS, params=params)
+        payload_id = None
+        if conn is not None:
+            payload_id = db.archive_raw_payload(conn, "cfbd", "/ratings/sp", params,
+                                                 resp.text, resp.status_code, PARSER_VERSION)
         resp.raise_for_status()
-        return {team["team"]: team for team in resp.json()}
+        ratings = resp.json()
+        if payload_id is not None:
+            db.update_raw_payload_counts(conn, payload_id, rows_accepted=len(ratings))
+        return {team["team"]: team for team in ratings}
     except Exception as e:
         print(f"Could not fetch SP+ ratings: {e}")
         return {}
 
 
-def fetch_epa_stats(year, week):
+def fetch_epa_stats(year, week, conn=None):
     """Fetch EPA stats per team."""
     try:
         url = f"{CFBD_BASE}/stats/season/advanced"
         params = {"year": year, "excludeGarbageTime": True}
         resp = requests.get(url, headers=HEADERS, params=params)
+        payload_id = None
+        if conn is not None:
+            payload_id = db.archive_raw_payload(conn, "cfbd", "/stats/season/advanced", params,
+                                                 resp.text, resp.status_code, PARSER_VERSION)
         resp.raise_for_status()
-        return {item["team"]: item for item in resp.json()}
+        stats = resp.json()
+        if payload_id is not None:
+            db.update_raw_payload_counts(conn, payload_id, rows_accepted=len(stats))
+        return {item["team"]: item for item in stats}
     except Exception as e:
         print(f"Could not fetch EPA stats: {e}")
         return {}
 
 
-def fetch_team_records(year):
+def fetch_team_records(year, conn=None):
     """Fetch win/loss records."""
     try:
         url = f"{CFBD_BASE}/records"
         params = {"year": year}
         resp = requests.get(url, headers=HEADERS, params=params)
+        payload_id = None
+        if conn is not None:
+            payload_id = db.archive_raw_payload(conn, "cfbd", "/records", params,
+                                                 resp.text, resp.status_code, PARSER_VERSION)
         resp.raise_for_status()
-        return {item["team"]: item for item in resp.json()}
+        records = resp.json()
+        if payload_id is not None:
+            db.update_raw_payload_counts(conn, payload_id, rows_accepted=len(records))
+        return {item["team"]: item for item in records}
     except Exception as e:
         print(f"Could not fetch records: {e}")
         return {}
@@ -266,30 +315,39 @@ def persist_to_db(games, enriched_games, epa_stats=None):
 
 def main():
     with db.log_run("cfbd_stats") as run:
-        week, year = get_current_week()
-        is_offseason = week == 1 and datetime.utcnow().month < 8
-        print(f"Running in {'OFFSEASON' if is_offseason else 'SEASON'} mode")
-        print(f"Fetching data for Week {week}, {year}")
+        # Dedicated connection for raw-payload archival only (external
+        # review, accepted 2026-08-04) -- separate from persist_to_db()'s
+        # own self-managed connection below, committed/closed once all of
+        # this run's CFBD calls are done, on every exit path.
+        archive_conn = db.get_connection()
+        try:
+            week, year = get_current_week(conn=archive_conn)
+            is_offseason = week == 1 and datetime.utcnow().month < 8
+            print(f"Running in {'OFFSEASON' if is_offseason else 'SEASON'} mode")
+            print(f"Fetching data for Week {week}, {year}")
 
-        games = fetch_games(year, week)
+            games = fetch_games(year, week, conn=archive_conn)
 
-        if not games:
-            print("No games found — likely offseason. Saving empty placeholder.")
-            os.makedirs("data/stats", exist_ok=True)
-            out_path = f"data/stats/week_{week}_{year}.json"
-            with open(out_path, "w", encoding="utf-8") as f:
-                json.dump({
-                    "week": week,
-                    "year": year,
-                    "offseason": True,
-                    "games": []
-                }, f, indent=2)
-            print(f"Saved placeholder to {out_path}")
-            return
+            if not games:
+                print("No games found — likely offseason. Saving empty placeholder.")
+                os.makedirs("data/stats", exist_ok=True)
+                out_path = f"data/stats/week_{week}_{year}.json"
+                with open(out_path, "w", encoding="utf-8") as f:
+                    json.dump({
+                        "week": week,
+                        "year": year,
+                        "offseason": True,
+                        "games": []
+                    }, f, indent=2)
+                print(f"Saved placeholder to {out_path}")
+                return
 
-        sp_ratings = fetch_sp_ratings(year)
-        epa_stats = fetch_epa_stats(year, week)
-        records = fetch_team_records(year)
+            sp_ratings = fetch_sp_ratings(year, conn=archive_conn)
+            epa_stats = fetch_epa_stats(year, week, conn=archive_conn)
+            records = fetch_team_records(year, conn=archive_conn)
+        finally:
+            archive_conn.commit()
+            archive_conn.close()
 
         enriched_games = []
         for game in games:

@@ -40,6 +40,11 @@ MARKETS = "spreads"
 # that doesn't exist; three real books is what's actually available.
 BOOKMAKERS = "draftkings,fanduel,betmgm"
 
+# Bumped whenever the parsing logic below changes in a way that would
+# matter for replaying an archived raw_payloads row through a fixed
+# parser (external review, accepted 2026-08-04).
+PARSER_VERSION = "fetch_odds.v1"
+
 # Known cases (found by spot-checking a live Odds API response against our
 # CFBD-sourced teams table, 2026-07-29) where CFBD's official school name
 # shares no prefix at all with The Odds API's team name -- one side uses an
@@ -54,8 +59,13 @@ KNOWN_TEAM_ALIASES = {
 }
 
 
-def fetch_current_lines():
-    """Fetch current spreads for all upcoming CFB games."""
+def fetch_current_lines(conn=None):
+    """Fetch current spreads for all upcoming CFB games. `conn`, if given,
+    archives the raw response (external review, accepted 2026-08-04) --
+    the API key is redacted by db.archive_raw_payload() itself regardless,
+    but this is the one call site in the project where the key genuinely
+    lives in `params` rather than a header, so it's the one that matters
+    most for that safety net actually doing something."""
     url = f"{ODDS_BASE}/sports/{SPORT}/odds"
     params = {
         "apiKey": ODDS_API_KEY,
@@ -66,6 +76,11 @@ def fetch_current_lines():
     }
     try:
         resp = requests.get(url, params=params, timeout=30)
+        if conn is not None:
+            payload_id = db.archive_raw_payload(
+                conn, "the_odds_api", f"/sports/{SPORT}/odds", params,
+                resp.text, resp.status_code, PARSER_VERSION,
+            )
         resp.raise_for_status()
     except Exception as e:
         print(f"Odds API unavailable ({e}) — returning empty lines.")
@@ -75,6 +90,8 @@ def fetch_current_lines():
     print(f"Odds API requests remaining: {remaining}")
 
     games = resp.json()
+    if conn is not None:
+        db.update_raw_payload_counts(conn, payload_id, rows_accepted=len(games))
     processed = []
 
     for game in games:
@@ -323,7 +340,17 @@ def has_games_this_week(conn, season, week):
 
 def main():
     with db.log_run("odds_api") as run:
-        week, year = fetch_stats.get_current_week()
+        # Dedicated connection for raw-payload archival only (external
+        # review, accepted 2026-08-04) -- separate from the several other
+        # short-lived connections main() already opens for their own
+        # narrow purposes below. Committed/closed once this run's calendar
+        # + odds calls are done.
+        archive_conn = db.get_connection()
+        try:
+            week, year = fetch_stats.get_current_week(conn=archive_conn)
+        finally:
+            archive_conn.commit()
+            archive_conn.close()
 
         conn = db.get_connection()
         try:
@@ -339,14 +366,21 @@ def main():
             return
 
         print(f"Fetching odds for Week {week}, {year}")
-        current_lines = fetch_current_lines()
+        archive_conn = db.get_connection()
+        try:
+            current_lines = fetch_current_lines(conn=archive_conn)
 
-        # Drop games outside this week's actual date range (marquee
-        # matchups months out that the Odds API already has lines for --
-        # see filter_by_week()'s docstring). Hard-fail rather than silently
-        # skip filtering if the range can't be determined: writing
-        # everything unfiltered is exactly the bug this exists to prevent.
-        date_range = fetch_stats.get_week_date_range(year, week)
+            # Drop games outside this week's actual date range (marquee
+            # matchups months out that the Odds API already has lines for --
+            # see filter_by_week()'s docstring). Hard-fail rather than
+            # silently skip filtering if the range can't be determined:
+            # writing everything unfiltered is exactly the bug this exists
+            # to prevent.
+            date_range = fetch_stats.get_week_date_range(year, week, conn=archive_conn)
+        finally:
+            archive_conn.commit()
+            archive_conn.close()
+
         if date_range is None:
             raise RuntimeError(
                 f"No calendar date range found for Week {week}, {year} -- "

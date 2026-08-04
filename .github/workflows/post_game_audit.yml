@@ -8,6 +8,16 @@ on:
 permissions:
   contents: write
 
+# Shared across all three scheduled workflows (same group name in
+# weekly_report.yml/midweek_line_pull.yml) -- external review, accepted
+# 2026-08-04: all three read-modify-write the same committed data/cfb.db,
+# and two overlapping runs pushing at once is exactly what caused the push
+# races that made this necessary. cancel-in-progress: false queues a
+# second trigger instead of killing an in-flight run mid-write.
+concurrency:
+  group: cfb-betting-system-db
+  cancel-in-progress: false
+
 jobs:
   audit:
     runs-on: ubuntu-latest
@@ -22,7 +32,29 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install requests
+        run: pip install -r requirements.txt
+
+      - name: Run test suite
+        # Hard gate (external review, accepted 2026-08-04): must pass
+        # BEFORE any fetch/generate/commit step runs. No `if: always()`
+        # here on purpose -- every step below that touches data/cfb.db
+        # checks `steps.tests.outcome == 'success'` explicitly, so a test
+        # failure blocks the mutation/commit path even though those later
+        # steps use `if: always()` for their own, separate resilience
+        # reasons (see their comments).
+        id: tests
+        run: python -m pytest -q
+
+      - name: Backup database before this run's mutations
+        # Pre-mutation snapshot (external review, accepted 2026-08-04):
+        # taken right after checkout, before the audit step can touch
+        # data/cfb.db, so a bad run has something to restore from.
+        if: always() && steps.tests.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: cfb-db-backup-post-game-audit-${{ github.run_id }}
+          path: data/cfb.db
+          retention-days: 14
 
       - name: Grade picks, CLV, hook flags
         # Replaces the old update_results.py (deleted) and its
@@ -31,21 +63,62 @@ jobs:
         # models/post_game_audit.py for what this grades against and why
         # backdoor-cover detection isn't implemented (needs data this
         # project hasn't ingested).
+        if: steps.tests.outcome == 'success'
         env:
           CFBD_API_KEY: ${{ secrets.CFBD_API_KEY }}
         run: python models/post_game_audit.py
 
       - name: Build dashboard
-        if: always()
+        if: always() && steps.tests.outcome == 'success'
         env:
           CFBD_API_KEY: ${{ secrets.CFBD_API_KEY }}
         run: python models/build_dashboard.py
 
+      - name: Verify database integrity
+        # PRAGMA integrity_check before every commit of cfb.db (external
+        # review, accepted 2026-08-04): hard-fails the run (no `|| true`)
+        # if the committed DB file would be corrupt -- a corrupted DB must
+        # never be pushed, since git history would bake the corruption in
+        # as the new baseline for every future checkout.
+        id: integrity
+        if: always() && steps.tests.outcome == 'success'
+        run: |
+          python -c "
+          import sys
+          sys.path.insert(0, '.')
+          import db
+          ok = db.integrity_check()
+          print('PRAGMA integrity_check:', 'ok' if ok else 'FAILED')
+          sys.exit(0 if ok else 1)
+          "
+
       - name: Commit updated results and dashboard
-        if: always()
+        if: always() && steps.tests.outcome == 'success' && steps.integrity.outcome == 'success'
         run: |
           git config user.name "cfb-bot"
           git config user.email "bot@cfb-betting-system"
           git add docs/ data/cfb.db
-          git diff --staged --quiet || git commit -m "Post-game audit $(date +'%Y-%m-%d')"
-          git push
+          if git diff --staged --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+          git commit -m "Post-game audit $(date +'%Y-%m-%d')"
+
+          # Bounded pull --rebase / push retry (external review, accepted
+          # 2026-08-04): the shared concurrency group above already
+          # prevents overlapping runs of these three workflows, but a
+          # manual push to main between checkout and this step is still
+          # possible, so this stays a real (if now rare) safety net rather
+          # than a no-op.
+          max_attempts=5
+          for attempt in $(seq 1 $max_attempts); do
+            git pull --rebase origin main
+            if git push; then
+              break
+            fi
+            if [ "$attempt" -eq "$max_attempts" ]; then
+              echo "Push failed after $max_attempts attempts."
+              exit 1
+            fi
+            echo "Push rejected (attempt $attempt/$max_attempts), retrying..."
+          done

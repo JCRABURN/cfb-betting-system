@@ -51,17 +51,31 @@ from line_utils import get_latest_line
 CFBD_BASE = fetch_stats.CFBD_BASE
 HEADERS = fetch_stats.HEADERS
 
+# Same /games endpoint fetch_stats.fetch_games() calls, but a distinct
+# parser_version -- this call is parsed for homePoints/awayPoints/
+# completed, a different downstream shape than fetch_stats's own use of
+# the same raw response (external review, accepted 2026-08-04).
+PARSER_VERSION = "post_game_audit.v1"
 
-def fetch_final_scores(year, week):
+
+def fetch_final_scores(year, week, conn=None):
     """Final scores for every FBS game in (year, week), keyed by CFBD
     game_id. Same camelCase field mapping already verified live elsewhere
-    in this project (homePoints/awayPoints, classification='fbs')."""
-    resp = requests.get(
-        f"{CFBD_BASE}/games", headers=HEADERS,
-        params={"year": year, "week": week, "classification": "fbs"}, timeout=30,
-    )
+    in this project (homePoints/awayPoints, classification='fbs').
+    `conn`, if given, archives the raw response before raise_for_status()
+    (external review, accepted 2026-08-04), so an error response is
+    captured too, not just a successful one."""
+    params = {"year": year, "week": week, "classification": "fbs"}
+    resp = requests.get(f"{CFBD_BASE}/games", headers=HEADERS, params=params, timeout=30)
+    payload_id = None
+    if conn is not None:
+        payload_id = db.archive_raw_payload(conn, "cfbd", "/games", params,
+                                             resp.text, resp.status_code, PARSER_VERSION)
     resp.raise_for_status()
-    return {g["id"]: g for g in resp.json()}
+    games = resp.json()
+    if payload_id is not None:
+        db.update_raw_payload_counts(conn, payload_id, rows_accepted=len(games))
+    return {g["id"]: g for g in games}
 
 
 def persist_final_scores(conn, scores):
@@ -140,11 +154,10 @@ def grade_pending_picks(conn, season, week):
 
 def main():
     with db.log_run("post_game_audit") as run:
-        week, season = fetch_stats.get_current_week()
-
-        scores = fetch_final_scores(season, week)
         conn = db.get_connection()
         try:
+            week, season = fetch_stats.get_current_week(conn=conn)
+            scores = fetch_final_scores(season, week, conn=conn)
             scores_updated = persist_final_scores(conn, scores)
             graded, hooks = grade_pending_picks(conn, season, week)
         finally:
