@@ -201,6 +201,7 @@ td.num, th.num { text-align: right; }
 .pill.flip { background: transparent; border: 1px solid var(--bad); color: var(--bad); }
 .pill.low-conf { background: transparent; border: 1px solid var(--text-soft); color: var(--text-soft); }
 .pill.standard { background: var(--neutral-bg); color: var(--text-soft); }
+.no-pick { color: var(--text-soft); font-style: italic; cursor: help; }
 .panel.secondary { background: var(--neutral-bg); margin-left: -20px; margin-right: -20px; padding-left: 20px; padding-right: 20px; }
 .panel.secondary .eyebrow { color: var(--text-soft); }
 .disclaimer { display: flex; gap: 12px; border: 1px solid var(--bad); background: var(--bad-bg); border-radius: 3px; padding: 14px 16px; margin: 4px 0 22px; }
@@ -311,6 +312,9 @@ _CONFIDENCE_DISPLAY = {
     "low_confidence_large_edge": ("low-conf", "low confidence"),
     "low_confidence_prior_season_data": ("low-conf", "prior-season data"),
     "standard": ("standard", "standard"),
+    # "no_pick_extrapolation" deliberately has no entry here -- it's not a
+    # confidence tier, it's a decision not to show a pick at all. Handled
+    # as a distinct row shape in _model_picks_rows() below, not a pill.
 }
 
 
@@ -319,14 +323,32 @@ def _model_picks_rows(card):
         return '<tr><td colspan="4"><div class="empty-state">No card generated yet this week.</div></td></tr>'
     rows = []
     for g in card["games"]:
+        matchup = (
+            f'<span class="away">{_esc(g["away_team"])}</span>'
+            f'<span class="at">@</span>{_esc(g["home_team"])}'
+        )
+        if g["confidence"] == "no_pick_extrapolation":
+            # No side, no edge number shown -- a big prior-season-fallback
+            # edge is the model's worst-performing case (§19-20), not a
+            # strong signal dressed up with extra caveats. Game identity
+            # stays visible; the raw edge is still in the tooltip for
+            # anyone auditing, just never presented as meaningful.
+            rows.append(
+                f'<tr><td class="matchup">{matchup}</td>'
+                f'<td colspan="3" class="no-pick" '
+                f'title="Raw model edge {g["edge"]:.1f} pts, not shown -- prior-season fallback input, '
+                f'past the 10+ bucket that\'s the model\'s worst-performing slice (ARCHITECTURE.md &sect;19-20)">'
+                f'No pick &mdash; extrapolation beyond model&rsquo;s reliable range</td></tr>'
+            )
+            continue
+
         conf_class, conf_label = _CONFIDENCE_DISPLAY[g["confidence"]]
         prior_season_note = (
             ' <span class="pill flip" title="Uses prior-season final EPA -- no in-season data exists yet (Week 1)">week 1</span>'
             if g.get("uses_prior_season_data") else ""
         )
         rows.append(
-            f'<tr><td class="matchup"><span class="away">{_esc(g["away_team"])}</span>'
-            f'<span class="at">@</span>{_esc(g["home_team"])}</td>'
+            f'<tr><td class="matchup">{matchup}</td>'
             f'<td>{_esc(g["side"])}</td>'
             f'<td class="num mono">{g["edge"]:.1f}</td>'
             f'<td class="num"><span class="pill {conf_class}">{conf_label}</span>{prior_season_note}</td></tr>'
@@ -343,11 +365,17 @@ def _prior_season_banner_html(card):
     if not card or not card.get("flagged_prior_season_data"):
         return ""
     n = len(card["flagged_prior_season_data"])
+    no_pick_n = len(card.get("flagged_no_pick_extrapolation") or [])
+    no_pick_note = (
+        f' {no_pick_n} of those go further: edge past the model\'s worst-performing bucket '
+        f'(ARCHITECTURE.md &sect;19-20) on top of the fallback input, so those show as no pick at all, '
+        f'not just low confidence.' if no_pick_n else ""
+    )
     return (
         '<div class="stale-banner"><span class="mark">&#9888;</span>'
         f'<span><strong>{n} pick{"s" if n != 1 else ""} this week use{"s" if n == 1 else ""} prior-season EPA</strong> '
         "-- no in-season data can exist yet this early (Week 1), so these use last season's final numbers "
-        "as a fallback input (MODEL_DESIGN.md &sect;6). Confidence is capped accordingly, not standard.</span></div>"
+        f"as a fallback input (MODEL_DESIGN.md &sect;6). Confidence is capped accordingly, not standard.{no_pick_note}</span></div>"
     )
 
 

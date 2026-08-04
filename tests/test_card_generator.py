@@ -297,9 +297,10 @@ def test_persist_picks_to_db_inserts_one_row_per_game(temp_db):
     conn.commit()
 
     card = cg.build_card(conn, 2023, 5)
-    rows_added = cg.persist_picks_to_db(conn, card)
+    rows_added, rows_retracted = cg.persist_picks_to_db(conn, card)
 
     assert rows_added == len(card["games"]) == 3
+    assert rows_retracted == 0
     stored = conn.execute("SELECT COUNT(*) FROM picks WHERE pick_type = 'live'").fetchone()[0]
     conn.close()
     assert stored == 3
@@ -336,8 +337,8 @@ def test_persist_picks_to_db_is_idempotent(temp_db):
     conn.commit()
 
     card = cg.build_card(conn, 2023, 5)
-    first = cg.persist_picks_to_db(conn, card)
-    second = cg.persist_picks_to_db(conn, card)
+    first, _ = cg.persist_picks_to_db(conn, card)
+    second, _ = cg.persist_picks_to_db(conn, card)
 
     total = conn.execute("SELECT COUNT(*) FROM picks WHERE pick_type = 'live'").fetchone()[0]
     conn.close()
@@ -437,3 +438,162 @@ def test_non_week1_games_never_flagged_prior_season_data(temp_db):
 
     assert card["flagged_prior_season_data"] == []
     assert all(not g["uses_prior_season_data"] for g in card["games"])
+
+
+# ---------------------------------------------------------------------------
+# no_pick_extrapolation: prior-season fallback + edge > 10 (2026-08-04)
+# ---------------------------------------------------------------------------
+
+def test_week1_large_edge_is_suppressed_to_no_pick(temp_db):
+    """intercept=0.5, coef=65.0. E(net .50) vs F(net -.30) from 2022 ->
+    epa_diff .80 -> predicted margin 0.5+65*0.80=52.5. Market home_spread
+    -13.0 -> market home margin 13.0 -> edge = 52.5-13.0 = 39.5, well past
+    the >10 threshold."""
+    conn = temp_db.get_connection()
+    build_training_fixture(conn)
+    insert_stats(conn, 2022, 15, "E", 0.50, 0.0)
+    insert_stats(conn, 2022, 15, "F", -0.30, 0.0)
+    insert_game(conn, 10, 2023, 1, "E", "F", completed=0)
+    insert_line(conn, 10, 2023, 1, "E", "F", home_spread=-13.0, line_type="current")
+    conn.commit()
+
+    card = cg.build_card(conn, 2023, 1)
+    conn.close()
+
+    game = card["games"][0]
+    assert game["edge"] == 39.5
+    assert game["confidence"] == "no_pick_extrapolation"
+    assert game["uses_prior_season_data"] is True  # still true -- data untouched, just suppressed
+
+    flagged_ids = {g["game_id"] for g in card["flagged_no_pick_extrapolation"]}
+    assert 10 in flagged_ids
+    # Still counted as using prior-season data too -- the two flags aren't exclusive.
+    assert 10 in {g["game_id"] for g in card["flagged_prior_season_data"]}
+
+
+def test_week1_edge_exactly_at_ten_is_not_suppressed(temp_db):
+    """Boundary: threshold is strictly > 10, so edge == 10.0 exactly must
+    stay low_confidence_prior_season_data, not get suppressed."""
+    conn = temp_db.get_connection()
+    build_training_fixture(conn)
+    insert_stats(conn, 2022, 15, "E", 0.30, 0.0)
+    insert_stats(conn, 2022, 15, "F", 0.00, 0.0)
+    insert_game(conn, 10, 2023, 1, "E", "F", completed=0)
+    # predicted margin 0.5+65*0.30=20.0; home_spread=-10.0 -> market margin
+    # 10.0 -> edge = 20.0-10.0 = 10.0 exactly.
+    insert_line(conn, 10, 2023, 1, "E", "F", home_spread=-10.0, line_type="current")
+    conn.commit()
+
+    card = cg.build_card(conn, 2023, 1)
+    conn.close()
+
+    game = card["games"][0]
+    assert game["edge"] == 10.0
+    assert game["confidence"] == "low_confidence_prior_season_data"
+    assert card["flagged_no_pick_extrapolation"] == []
+
+
+def test_non_week1_large_edge_is_unaffected_by_extrapolation_suppression(temp_db):
+    """The new suppression only applies to prior-season-fallback picks --
+    a normal week-5 large edge (real in-season data, no fallback involved)
+    still gets low_confidence_large_edge, not no_pick_extrapolation."""
+    conn = temp_db.get_connection()
+    build_training_fixture(conn)
+    insert_stats(conn, 2023, 4, "E", 0.50, 0.0)
+    insert_stats(conn, 2023, 4, "F", -0.30, 0.0)
+    insert_game(conn, 10, 2023, 5, "E", "F", completed=0)
+    insert_line(conn, 10, 2023, 5, "E", "F", home_spread=-13.0, line_type="current")
+    conn.commit()
+
+    card = cg.build_card(conn, 2023, 5)
+    conn.close()
+
+    game = card["games"][0]
+    assert game["edge"] == 39.5  # same numbers as the week-1 suppression test
+    assert game["confidence"] == "low_confidence_large_edge"
+    assert game["uses_prior_season_data"] is False
+    assert card["flagged_no_pick_extrapolation"] == []
+
+
+def test_no_pick_extrapolation_games_excluded_from_persisted_picks(temp_db):
+    conn = temp_db.get_connection()
+    build_training_fixture(conn)
+    insert_stats(conn, 2022, 15, "E", 0.50, 0.0)
+    insert_stats(conn, 2022, 15, "F", -0.30, 0.0)
+    insert_game(conn, 10, 2023, 1, "E", "F", completed=0)
+    insert_line(conn, 10, 2023, 1, "E", "F", home_spread=-13.0, line_type="current")
+    conn.commit()
+
+    card = cg.build_card(conn, 2023, 1)
+    rows_added, rows_retracted = cg.persist_picks_to_db(conn, card)
+
+    stored = conn.execute("SELECT COUNT(*) FROM picks WHERE pick_type = 'live'").fetchone()[0]
+    conn.close()
+
+    assert card["games"][0]["confidence"] == "no_pick_extrapolation"
+    assert rows_added == 0
+    assert rows_retracted == 0  # nothing stale to retract -- this is the first run
+    assert stored == 0
+
+
+def test_no_pick_extrapolation_retracts_a_stale_pending_pick_from_an_earlier_run(temp_db):
+    """The real scenario this exists for: an earlier run persisted a
+    pending pick before this game's edge crossed the no-pick threshold
+    (the line moved, or -- as literally happened 2026-08-04 -- the
+    suppression rule didn't exist yet). Re-running the card generator
+    must retract that stale row, not leave it to be graded Monday as a
+    real recommendation."""
+    conn = temp_db.get_connection()
+    build_training_fixture(conn)
+    insert_stats(conn, 2022, 15, "E", 0.50, 0.0)
+    insert_stats(conn, 2022, 15, "F", -0.30, 0.0)
+    insert_game(conn, 10, 2023, 1, "E", "F", completed=0)
+    insert_line(conn, 10, 2023, 1, "E", "F", home_spread=-13.0, line_type="current")
+    conn.commit()
+
+    # Simulate a stale row from before this game was classified no_pick_extrapolation.
+    conn.execute(
+        "INSERT INTO picks (game_id, week, year, home_team, away_team, edge, recommended_side, "
+        "status, pick_type, created_at) VALUES (10, 1, 2023, 'E', 'F', 39.5, 'E', 'pending', 'live', 'earlier')"
+    )
+    conn.commit()
+    assert conn.execute("SELECT COUNT(*) FROM picks WHERE pick_type = 'live'").fetchone()[0] == 1
+
+    card = cg.build_card(conn, 2023, 1)
+    rows_added, rows_retracted = cg.persist_picks_to_db(conn, card)
+
+    stored = conn.execute("SELECT COUNT(*) FROM picks WHERE pick_type = 'live'").fetchone()[0]
+    conn.close()
+
+    assert rows_added == 0
+    assert rows_retracted == 1
+    assert stored == 0  # the stale pending row is gone, not left around
+
+
+def test_no_pick_extrapolation_never_retracts_a_settled_pick(temp_db):
+    """Only status='pending' rows are ever retracted -- a real settled
+    result from a genuine past decision must never be deleted, even if
+    the game would now classify as no_pick_extrapolation."""
+    conn = temp_db.get_connection()
+    build_training_fixture(conn)
+    insert_stats(conn, 2022, 15, "E", 0.50, 0.0)
+    insert_stats(conn, 2022, 15, "F", -0.30, 0.0)
+    insert_game(conn, 10, 2023, 1, "E", "F", completed=1, home_pts=40, away_pts=10)
+    insert_line(conn, 10, 2023, 1, "E", "F", home_spread=-13.0, line_type="current")
+    conn.commit()
+
+    conn.execute(
+        "INSERT INTO picks (game_id, week, year, home_team, away_team, edge, recommended_side, "
+        "status, result, pick_type, created_at) VALUES "
+        "(10, 1, 2023, 'E', 'F', 39.5, 'E', 'settled', 'win', 'live', 'earlier')"
+    )
+    conn.commit()
+
+    card = cg.build_card(conn, 2023, 1)
+    rows_added, rows_retracted = cg.persist_picks_to_db(conn, card)
+
+    stored = conn.execute("SELECT status, result FROM picks WHERE pick_type = 'live'").fetchone()
+    conn.close()
+
+    assert rows_retracted == 0
+    assert stored == ("settled", "win")

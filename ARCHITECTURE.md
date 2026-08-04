@@ -840,3 +840,31 @@ Confirmed twice now (§18's live check, and this week's real full pull) — `cae
 ### Tests
 
 31 new tests: 6 in `tests/test_fetch_odds.py` (`filter_by_week` — inside range, months out, before range, exact boundaries, missing `commence_time`, mixed slate), 4 in `tests/test_line_utils.py` (`get_opening_line_real_book` — ignores consensus, preference order, falls back within real books, `None` when only consensus/historical books exist), and the existing `tests/test_gambling_view.py` suite rewritten around real book names with 3 new cases (prefers a real book over consensus, preference order, skip when only consensus/historical books exist). 217 tests pass across the whole suite.
+
+### Note: 2026 preseason SP+ not yet published (checked 2026-08-04)
+
+Live call, `GET /ratings/sp?year=2026` — `200`, empty list (0 entries). Not a candidate week 1-3 input right now; §6's fallback (prior-season final EPA) stands as-is. If SP+ appears before Week 1, it becomes a candidate replacement/supplement for the week 1-3 fallback (option (b) in §6's original list, "preseason / returning-production estimate if available") — worth rechecking closer to kickoff, not assumed to still be empty.
+
+## 25. Suppressing week 1's nonsense tail edges (2026-08-04)
+
+Re-running the real card after §23's fallback landed showed the shape of the problem plainly: of 49 lined week 1 games, several carried edges past 25-30+ points (Indiana @ North Texas 33.8, Texas @ Texas State 29.7, Oklahoma @ UTEP 29.1...) — the prior-season-fallback input stacked under the model's already-worst-performing edge bucket (§19-20: edge>=10 is the demonstrably worst slice, 50.7% ATS, below 50% in 2 of 5 seasons on REAL in-season data). A 29-point "pick" here isn't a confident read, it's two unreliable things compounding.
+
+### `_assign_confidence()`: a fourth state that isn't a confidence tier
+
+`"no_pick_extrapolation"` fires when `uses_prior_season_data` AND `edge > 10` (the exact §19-20 bucket boundary, strict `>` per the instruction). Takes priority over `"low_confidence_prior_season_data"` for the same game — this isn't "extra-low confidence," it's a decision to stop presenting a number at all. Small-edge (≤10) prior-season picks are untouched, still capped at `"low_confidence_prior_season_data"` as before. `NO_PICK_EXTRAPOLATION_THRESHOLD = 10.0`, same value as the existing large-edge threshold, kept as a separate named constant since the two now govern genuinely different decisions (low-confidence vs. no-pick-at-all) even though the number happens to match.
+
+New `flagged_no_pick_extrapolation` list mirrors the existing `flagged_*` pattern. `card_generator.py`'s data still carries the raw computed `side`/`edge`/`predicted_home_margin` for these games (nothing is deleted from the record) — only the PRESENTATION suppresses them, per "show them as no pick, not hide them."
+
+### Dashboard: the row shows "No pick," not the number
+
+`build_dashboard.py`'s Model Picks table special-cases `"no_pick_extrapolation"` rows: the matchup still shows (so you know which game), but Side/Edge/Confidence collapse into a single muted, italic message — "No pick — extrapolation beyond model's reliable range" — with the raw edge value only in a hover tooltip for anyone auditing, never presented as a number that means something. The existing prior-season banner gained a second sentence naming how many of its games go further to no-pick, so the distinction between "capped confidence" and "no pick at all" is visible without reading every row.
+
+### A real correctness gap, found by re-running against real data, not assumed away
+
+`card_generator.py` had already persisted 49 pending `picks` rows in an earlier run (§23), before this suppression rule existed — including the large-edge games that now classify as `no_pick_extrapolation`. Re-running the card with the new rule only stops NEW rows from being added for them; it doesn't retroactively fix rows already sitting in the table, which would otherwise get graded by `post_game_audit.py` on Monday as if they were real recommendations, silently contradicting "no pick." Fixed: `persist_picks_to_db()` now DELETEs any existing `status='pending'` row for a game that classifies as `no_pick_extrapolation` on this run (never touches `status='settled'` rows — a genuine past result is never retroactively erased), and returns `(rows_added, rows_retracted)` instead of a single count. This isn't just a one-time migration fix — an edge can cross the threshold between runs as the line moves, so the retraction has to be a standing part of every run, not a cleanup script.
+
+Verified against the real week 1 data: re-running `card_generator.py` retracted exactly 27 stale pending rows (matching `flagged_no_pick_extrapolation`'s count precisely), leaving 22 pending picks, all `low_confidence_prior_season_data`. Rebuilt the dashboard: 27 "No pick" rows render correctly, the banner reads "49 picks this week use prior-season EPA... 27 of those go further."
+
+### Tests
+
+8 new tests: 6 in `tests/test_card_generator.py` (large edge suppressed to no-pick, exact boundary at edge==10 stays low-confidence not suppressed since the threshold is strict `>`, a non-week-1 large edge is unaffected, no-pick games excluded from new persisted picks, a stale pending row from an earlier run gets retracted, a settled result is never retracted), and 2 in `tests/test_build_dashboard.py` (no-pick rows hide side/edge and show the message, no no-pick markup at all when nothing is flagged). 225 tests pass across the whole suite.

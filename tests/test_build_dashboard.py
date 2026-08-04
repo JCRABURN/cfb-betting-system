@@ -192,3 +192,45 @@ def test_render_dashboard_no_prior_season_banner_when_nothing_flagged():
     }
     html = bd.render_dashboard(2026, 1, card, None, None, None, _healths(), "2026-08-04T14:00:00")
     assert "prior-season EPA" not in html
+
+
+def test_render_dashboard_no_pick_extrapolation_hides_side_and_edge():
+    card = {
+        "games": [
+            {"away_team": "Massachusetts", "home_team": "Mississippi State", "side": "Massachusetts",
+             "edge": 29.0, "confidence": "no_pick_extrapolation", "uses_prior_season_data": True},
+        ],
+        "flagged_prior_season_data": [
+            {"away_team": "Massachusetts", "home_team": "Mississippi State", "side": "Massachusetts",
+             "edge": 29.0, "confidence": "no_pick_extrapolation", "uses_prior_season_data": True},
+        ],
+        "flagged_no_pick_extrapolation": [
+            {"away_team": "Massachusetts", "home_team": "Mississippi State", "side": "Massachusetts",
+             "edge": 29.0, "confidence": "no_pick_extrapolation", "uses_prior_season_data": True},
+        ],
+    }
+    html = bd.render_dashboard(2026, 1, card, None, None, None, _healths(), "2026-08-04T14:00:00")
+
+    # The matchup itself is still shown...
+    assert "Massachusetts" in html
+    assert "Mississippi State" in html
+    # ...but not as a normal pick: no bare "29.0" edge cell, no side cell
+    # presenting Massachusetts as the recommended team, and the explicit
+    # no-pick message is present.
+    assert "No pick &mdash; extrapolation beyond model" in html
+    assert "1 of those go further" in html
+
+
+def test_render_dashboard_no_pick_extrapolation_does_not_appear_when_none_flagged():
+    card = {
+        "games": [{"away_team": "A", "home_team": "B", "side": "B", "edge": 4.0,
+                    "confidence": "low_confidence_prior_season_data", "uses_prior_season_data": True}],
+        "flagged_prior_season_data": [
+            {"away_team": "A", "home_team": "B", "side": "B", "edge": 4.0,
+             "confidence": "low_confidence_prior_season_data", "uses_prior_season_data": True},
+        ],
+        "flagged_no_pick_extrapolation": [],
+    }
+    html = bd.render_dashboard(2026, 1, card, None, None, None, _healths(), "2026-08-04T14:00:00")
+    assert "No pick" not in html
+    assert "go further" not in html

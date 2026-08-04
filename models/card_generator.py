@@ -15,6 +15,20 @@ marked `uses_prior_season_data: true` and confidence-capped to
 "low_confidence_prior_season_data" (never "standard"), and surfaced in
 `flagged_prior_season_data` -- visible on the dashboard, not silent.
 
+Prior-season-fallback picks with |edge| > 10 go a step further: suppressed
+entirely to "no_pick_extrapolation" (2026-08-04), not just flagged low-
+confidence. The §19-20 bucket analysis already showed edge>=10 is the
+model's worst-performing slice on real in-season data; stacking a
+prior-season-fallback input under an already-unreliable large edge is
+worse, not just doubly-flagged, so these are shown as "no pick" rather
+than a big number dressed up to look like a strong signal. Excluded from
+`persist_picks_to_db()` entirely -- a "no pick" doesn't get a pending
+`picks` row to be graded as if it were a real recommendation, and any
+STALE pending row an earlier run already persisted for a game that now
+crosses this threshold gets retracted, not left around. See
+`_assign_confidence()`'s docstring for exactly where this sits relative
+to the other two confidence states.
+
 Reuses the SAME fitted model as the validated backtest (backtest_harness.py
 + baseline_epa.py) -- intercept+coefficient fit via OLS on seasons strictly
 before the target season, predictions built from get_team_stats_as_of's
@@ -82,6 +96,14 @@ from line_utils import list_all_games, get_latest_line
 # produce a nice-looking split. See ARCHITECTURE.md §19.
 LARGE_EDGE_LOW_CONFIDENCE_THRESHOLD = 10.0
 
+# Same numeric boundary, one step further: a prior-season-fallback pick
+# whose edge ALSO clears this (strictly greater than 10, per the user's
+# 2026-08-04 instruction) isn't just low-confidence, it's suppressed
+# entirely -- see _assign_confidence()'s docstring for why stacking a
+# known-weak input under the model's worst-performing edge bucket doesn't
+# just double the caution, it crosses into "not a real signal at all."
+NO_PICK_EXTRAPOLATION_THRESHOLD = 10.0
+
 
 def _assign_confidence(entries):
     """No graduated ranking by edge size. The backtest showed none of the
@@ -108,11 +130,27 @@ def _assign_confidence(entries):
     a large edge (data provenance -- roster turnover, transfer portal, over
     an offseason -- not extrapolation risk), so a week 1 game can never
     read as "standard" regardless of how small its edge looks; the input
-    feeding that edge is already known-weak. Does NOT reorder `entries` --
-    neither edge size nor data provenance is a quality ranking, so there's
-    nothing to sort by."""
+    feeding that edge is already known-weak.
+
+    A FOURTH state -- "no_pick_extrapolation" -- fires when BOTH apply:
+    prior-season fallback AND edge > 10. This isn't "extra-low confidence,"
+    it's a decision to stop presenting a number at all: the 10+ bucket is
+    already the model's worst-performing slice on real in-season data
+    (§19-20), and a large predicted margin built on a prior-season input
+    (roster turnover, transfer portal) is extrapolating on TOP of an
+    already-unreliable case, not just adding one more caveat to it. Takes
+    priority over "low_confidence_prior_season_data" for the same game --
+    a 29-point week 1 edge doesn't get shown as a capped pick, it gets
+    shown as no pick. Small-edge (<=10) prior-season picks are UNCHANGED,
+    still "low_confidence_prior_season_data" -- only the tail gets
+    suppressed, per the instruction to leave the rest as-is.
+
+    Does NOT reorder `entries` -- neither edge size nor data provenance is
+    a quality ranking, so there's nothing to sort by."""
     for entry in entries:
-        if entry["uses_prior_season_data"]:
+        if entry["uses_prior_season_data"] and entry["edge"] > NO_PICK_EXTRAPOLATION_THRESHOLD:
+            entry["confidence"] = "no_pick_extrapolation"
+        elif entry["uses_prior_season_data"]:
             entry["confidence"] = "low_confidence_prior_season_data"
         elif entry["edge"] >= LARGE_EDGE_LOW_CONFIDENCE_THRESHOLD:
             entry["confidence"] = "low_confidence_large_edge"
@@ -195,6 +233,7 @@ def build_card(conn, season, week):
         "games": entries,
         "flagged_large_edge": [e for e in entries if e["confidence"] == "low_confidence_large_edge"],
         "flagged_prior_season_data": [e for e in entries if e["uses_prior_season_data"]],
+        "flagged_no_pick_extrapolation": [e for e in entries if e["confidence"] == "no_pick_extrapolation"],
         "skipped": skipped,
     }
 
@@ -205,6 +244,17 @@ def persist_picks_to_db(conn, card):
     already has a pick_type='live' row (pending or settled) for this
     game_id, so re-running the card generator mid-week doesn't duplicate.
 
+    "no_pick_extrapolation" games get no NEW pending row -- a "no pick"
+    doesn't get graded as if it were a real recommendation. They ALSO
+    retract any pending row a PRIOR run already persisted for that
+    game_id: an edge can cross the no-pick threshold between runs (the
+    line moves, or -- as happened 2026-08-04 -- the suppression rule
+    didn't exist yet when an earlier run persisted it), and leaving a
+    stale pending pick around would have Monday's audit grade a game we
+    now explicitly decline to pick. Only ever touches status='pending'
+    rows -- a real settled result from a genuine past decision is never
+    retroactively deleted.
+
     Reuses the existing `picks` table (designed for the pre-EPA-only
     weighted model) pragmatically rather than migrating the schema:
     consensus_spread <- market_home_spread, projected_spread <-
@@ -213,13 +263,23 @@ def persist_picks_to_db(conn, card):
     JSON-encoded list; holds a 1-item list here, e.g. ["standard"]).
     units/key_factors/weather/risk_flags/qualifies don't apply to this
     model and are left at their inapplicable defaults (0/empty/NULL/False)
-    rather than populated with invented values."""
+    rather than populated with invented values.
+
+    Returns (rows_added, rows_retracted)."""
     import json
     from datetime import datetime
 
     now = datetime.utcnow().isoformat()
     rows_added = 0
+    rows_retracted = 0
     for game in card["games"]:
+        if game["confidence"] == "no_pick_extrapolation":
+            cur = conn.execute(
+                "DELETE FROM picks WHERE game_id = ? AND pick_type = 'live' AND status = 'pending'",
+                (game["game_id"],),
+            )
+            rows_retracted += cur.rowcount
+            continue
         exists = conn.execute(
             "SELECT 1 FROM picks WHERE game_id = ? AND pick_type = 'live'",
             (game["game_id"],),
@@ -244,7 +304,7 @@ def persist_picks_to_db(conn, card):
         )
         rows_added += 1
     conn.commit()
-    return rows_added
+    return rows_added, rows_retracted
 
 
 def main():
@@ -266,7 +326,8 @@ def main():
         conn = db.get_connection()
         try:
             card = build_card(conn, season, week)
-            run["rows_added"] = persist_picks_to_db(conn, card)
+            rows_added, rows_retracted = persist_picks_to_db(conn, card)
+            run["rows_added"] = rows_added
         finally:
             conn.close()
 
@@ -276,9 +337,10 @@ def main():
             json.dump(card, f, indent=2)
 
         print(f"Season {season} Week {week}: {len(card['games'])} lined games "
-              f"({len(card['flagged_large_edge'])} flagged low_confidence_large_edge), "
-              f"{len(card['skipped'])} skipped, {run['rows_added']} new picks persisted. "
-              f"Saved to {out_path}")
+              f"({len(card['flagged_large_edge'])} flagged low_confidence_large_edge, "
+              f"{len(card['flagged_no_pick_extrapolation'])} suppressed as no_pick_extrapolation), "
+              f"{len(card['skipped'])} skipped, {rows_added} new picks persisted, "
+              f"{rows_retracted} stale pending pick(s) retracted. Saved to {out_path}")
 
 
 if __name__ == "__main__":
