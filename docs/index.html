@@ -113,11 +113,11 @@ footer .theme-toggle button.active { background: var(--ink); color: var(--bg); }
     </div>
     <div class="masthead-meta">
       <div class="week">Week 1 &middot; 2026</div>
-      <div class="synced">Generated Aug 04, 16:13 UTC</div>
+      <div class="synced">Generated Aug 08, 13:49 UTC</div>
     </div>
   </div>
 
-  <div class="health"><div class="health-chip ok"><span class="day">Tue · Card</span><span class="state"><span class="dot"></span>Updated</span><div class="ts mono">Aug 04, 16:13 UTC</div></div><div class="health-chip ok"><span class="day">Thu/Sat · Drift</span><span class="state"><span class="dot"></span>Updated</span><div class="ts mono">Aug 04, 14:48 UTC</div></div><div class="health-chip pending"><span class="day">Sat · Pool</span><span class="state"><span class="dot"></span>Pending</span><div class="ts mono">Not yet run</div></div><div class="health-chip pending"><span class="day">Mon · Audit</span><span class="state"><span class="dot"></span>Pending</span><div class="ts mono">Not yet run</div></div></div>
+  <div class="health"><div class="health-chip ok"><span class="day">Tue · Card</span><span class="state"><span class="dot"></span>Updated</span><div class="ts mono">Aug 04, 16:13 UTC</div></div><div class="health-chip ok"><span class="day">Thu/Sat · Drift</span><span class="state"><span class="dot"></span>Updated</span><div class="ts mono">Aug 08, 13:49 UTC</div></div><div class="health-chip ok"><span class="day">Sat · Pool</span><span class="state"><span class="dot"></span>Updated</span><div class="ts mono">Aug 08, 13:49 UTC</div></div><div class="health-chip pending"><span class="day">Mon · Audit</span><span class="state"><span class="dot"></span>Pending</span><div class="ts mono">Not yet run</div></div></div>
 
   <section class="panel">
     <div class="panel-head">
@@ -186,6 +186,15 @@ footer .theme-toggle button.active { background: var(--ink); color: var(--bg); }
     <p class="dek">Your locked picks against the pool's own number, compared to where the market sits now. Sorted worst-for-your-pick first.</p>
     
     <div class="empty-state">No pool picks entered for this week yet &mdash; run <code>models/pool_view.py</code> after committing <code>data/pool_picks/week_1_2026.csv</code>.</div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head">
+      <div><div class="eyebrow headline">Headline &middot; Your Pool</div><h2 class="display">Ranked Pool Picks</h2></div>
+      <div class="asof mono">drift confirmation, edge as tiebreak only</div>
+    </div>
+    <p class="dek">Your own locked picks, ranked by how much the market has confirmed them since lock. Model edge only breaks a tie between two equally-confirmed picks &mdash; it never outranks the market read. Picks whose model game is flagged low-confidence are left off this board entirely.</p>
+    <div class="empty-state">No ranked picks yet &mdash; either no pool picks are locked for this week, or every locked pick's matching model game is flagged low-confidence and excluded from this board.</div>
   </section>
 
   <section class="panel secondary">
