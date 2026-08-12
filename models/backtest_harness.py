@@ -141,10 +141,21 @@ def get_opening_line(conn, game_id):
     the returned dict -- per MODEL_DESIGN.md §4's explicit instruction to
     fall back and FLAG it, never silently substitute a later line and call it
     the opener. If no book has one either (true for every 2019/2020 game --
-    also confirmed live), returns None and the caller must skip the game."""
+    also confirmed live), returns None and the caller must skip the game.
+
+    ORDER BY fetched_at ASC LIMIT 1 in both branches (oldest wins): 'opening'
+    rows are write-once per (game_id, book) under NORMAL operation, so an
+    unordered .fetchone() was "safe" the same way line_utils.get_latest_line()
+    was safe before real snapshots accumulated -- until
+    backfill_historical_lines.py --force re-ingests a week WITHOUT deleting
+    its old rows first, at which point duplicates exist and this becomes
+    exploitable the same way (external review follow-up, accepted
+    2026-08-12). ASC, not DESC: the TRUE opener is whichever row was fetched
+    FIRST, not the one closest to a later --force re-run."""
     row = conn.execute(
         "SELECT home_spread, total FROM betting_lines "
-        "WHERE game_id = ? AND line_type = 'opening' AND book = 'consensus'",
+        "WHERE game_id = ? AND line_type = 'opening' AND book = 'consensus' "
+        "ORDER BY fetched_at ASC LIMIT 1",
         (game_id,),
     ).fetchone()
     if row is not None and row[0] is not None:
@@ -153,7 +164,7 @@ def get_opening_line(conn, game_id):
     row = conn.execute(
         "SELECT home_spread, total, book FROM betting_lines "
         "WHERE game_id = ? AND line_type = 'opening' AND home_spread IS NOT NULL "
-        "ORDER BY book LIMIT 1",
+        "ORDER BY fetched_at ASC LIMIT 1",
         (game_id,),
     ).fetchone()
     if row is None:
@@ -168,11 +179,20 @@ def get_closing_line(conn, game_id, book=None):
     book vs. closing-from-another. Confirmed live: consensus closing coverage
     collapses after 2022 (29 rows total in 2023, 0 in 2024/2025) while
     individual books (e.g. Bovada) stay fully covered -- same class of gap as
-    get_opening_line, same fix: fall back and don't silently go without."""
+    get_opening_line, same fix: fall back and don't silently go without.
+
+    ORDER BY fetched_at DESC LIMIT 1 in all three branches (newest wins --
+    opposite direction from get_opening_line() above, since 'closing' means
+    the LAST number seen before kickoff, same latest-wins semantics as
+    line_utils.get_latest_line()). Same duplicate-row exposure as
+    get_opening_line(): safe under normal write-once-per-week operation,
+    exploitable via backfill_historical_lines.py --force (external review
+    follow-up, accepted 2026-08-12)."""
     if book is not None:
         row = conn.execute(
             "SELECT home_spread, total FROM betting_lines "
-            "WHERE game_id = ? AND line_type = 'closing' AND book = ?",
+            "WHERE game_id = ? AND line_type = 'closing' AND book = ? "
+            "ORDER BY fetched_at DESC LIMIT 1",
             (game_id, book),
         ).fetchone()
         if row is not None and row[0] is not None:
@@ -180,7 +200,8 @@ def get_closing_line(conn, game_id, book=None):
 
     row = conn.execute(
         "SELECT home_spread, total FROM betting_lines "
-        "WHERE game_id = ? AND line_type = 'closing' AND book = 'consensus'",
+        "WHERE game_id = ? AND line_type = 'closing' AND book = 'consensus' "
+        "ORDER BY fetched_at DESC LIMIT 1",
         (game_id,),
     ).fetchone()
     if row is not None and row[0] is not None:
@@ -189,7 +210,7 @@ def get_closing_line(conn, game_id, book=None):
     row = conn.execute(
         "SELECT home_spread, total, book FROM betting_lines "
         "WHERE game_id = ? AND line_type = 'closing' AND home_spread IS NOT NULL "
-        "ORDER BY book LIMIT 1",
+        "ORDER BY fetched_at DESC LIMIT 1",
         (game_id,),
     ).fetchone()
     if row is None:

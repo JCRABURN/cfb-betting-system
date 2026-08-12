@@ -28,11 +28,12 @@ def insert_stats(conn, season, week, team, off_epa, def_epa=0.0, source="cfbd_po
     )
 
 
-def insert_line(conn, game_id, season, week, home_spread, line_type, book="consensus", total=45.0):
+def insert_line(conn, game_id, season, week, home_spread, line_type, book="consensus", total=45.0,
+                 fetched_at="now"):
     conn.execute(
         "INSERT INTO betting_lines (game_id, season, week, home_team, away_team, book, home_spread, total, "
-        "line_type, source, fetched_at) VALUES (?, ?, ?, 'H', 'A', ?, ?, ?, ?, 'test', 'now')",
-        (game_id, season, week, book, home_spread, total, line_type),
+        "line_type, source, fetched_at) VALUES (?, ?, ?, 'H', 'A', ?, ?, ?, ?, 'test', ?)",
+        (game_id, season, week, book, home_spread, total, line_type, fetched_at),
     )
 
 
@@ -351,6 +352,72 @@ def test_opening_line_none_when_no_book_has_one_at_all(temp_db):
     result = bh.get_opening_line(conn, 1)
     conn.close()
     assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Duplicate-row regressions (external review follow-up, accepted 2026-08-12):
+# 'opening'/'closing' rows are write-once per (game_id, book) under normal
+# operation, but backfill_historical_lines.py --force re-ingests a week
+# without deleting its old rows first, so duplicates ARE possible -- same
+# defect class line_utils.get_latest_line() had. Opening must pick the
+# OLDEST (the true first-seen open); closing must pick the NEWEST (the
+# true last-seen-before-kickoff close) -- opposite directions, matching
+# what each line_type actually means.
+# ---------------------------------------------------------------------------
+
+def test_opening_line_consensus_branch_picks_oldest_of_duplicates(temp_db):
+    conn = temp_db.get_connection()
+    insert_game(conn, 1, 2021, 5, "H", "A")
+    insert_line(conn, 1, 2021, 5, -3.5, "opening", book="consensus", fetched_at="2021-09-01T00:00:00")
+    insert_line(conn, 1, 2021, 5, -4.5, "opening", book="consensus", fetched_at="2021-09-15T00:00:00")
+    conn.commit()
+    result = bh.get_opening_line(conn, 1)
+    conn.close()
+    assert result["home_spread"] == -3.5  # the earlier (genuine) open, not the --force re-ingest
+
+
+def test_opening_line_book_fallback_branch_picks_oldest_of_duplicates(temp_db):
+    conn = temp_db.get_connection()
+    insert_game(conn, 1, 2021, 5, "H", "A")
+    insert_line(conn, 1, 2021, 5, -3.5, "opening", book="Bovada", fetched_at="2021-09-01T00:00:00")
+    insert_line(conn, 1, 2021, 5, -4.5, "opening", book="Bovada", fetched_at="2021-09-15T00:00:00")
+    conn.commit()
+    result = bh.get_opening_line(conn, 1)
+    conn.close()
+    assert result["home_spread"] == -3.5
+
+
+def test_closing_line_book_param_branch_picks_newest_of_duplicates(temp_db):
+    conn = temp_db.get_connection()
+    insert_game(conn, 1, 2024, 5, "H", "A")
+    insert_line(conn, 1, 2024, 5, -5.0, "closing", book="Bovada", fetched_at="2024-11-01T00:00:00")
+    insert_line(conn, 1, 2024, 5, -6.0, "closing", book="Bovada", fetched_at="2024-11-10T00:00:00")
+    conn.commit()
+    result = bh.get_closing_line(conn, 1, book="Bovada")
+    conn.close()
+    assert result["home_spread"] == -6.0  # the later (re-ingested/corrected) close, not the stale first one
+
+
+def test_closing_line_consensus_branch_picks_newest_of_duplicates(temp_db):
+    conn = temp_db.get_connection()
+    insert_game(conn, 1, 2024, 5, "H", "A")
+    insert_line(conn, 1, 2024, 5, -4.5, "closing", book="consensus", fetched_at="2024-11-01T00:00:00")
+    insert_line(conn, 1, 2024, 5, -5.5, "closing", book="consensus", fetched_at="2024-11-10T00:00:00")
+    conn.commit()
+    result = bh.get_closing_line(conn, 1)
+    conn.close()
+    assert result["home_spread"] == -5.5
+
+
+def test_closing_line_book_fallback_branch_picks_newest_of_duplicates(temp_db):
+    conn = temp_db.get_connection()
+    insert_game(conn, 1, 2024, 5, "H", "A")
+    insert_line(conn, 1, 2024, 5, -4.5, "closing", book="Bovada", fetched_at="2024-11-01T00:00:00")
+    insert_line(conn, 1, 2024, 5, -5.5, "closing", book="Bovada", fetched_at="2024-11-10T00:00:00")
+    conn.commit()
+    result = bh.get_closing_line(conn, 1)  # no book param -- exercises the book-agnostic fallback
+    conn.close()
+    assert result["home_spread"] == -5.5
 
 
 # ---------------------------------------------------------------------------

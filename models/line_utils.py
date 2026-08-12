@@ -46,12 +46,28 @@ def get_latest_line(conn, game_id, prefer_book=None):
     here across the live path's 'current'/'closing' vocabulary split.
     Falls through to the book-agnostic behavior if that book has no line
     for either type (never silently fails just because the preferred book
-    lacks a later number)."""
+    lacks a later number).
+
+    betting_lines is APPEND-ONLY per (game_id, line_type, book) -- each
+    fetch_odds.py pull writes a NEW 'current' row rather than updating one
+    in place (db.py schema comment), so more than one row can match any of
+    the three queries below once a game has been pulled more than once.
+    Every branch orders by `fetched_at DESC LIMIT 1` so `.fetchone()`
+    deterministically gets the newest snapshot -- without it, SQLite
+    returns rows in unspecified (in practice: insertion/rowid) order, i.e.
+    the OLDEST snapshot, which is exactly backwards for a function named
+    get_latest_line (found live 2026-08-12: this silently returned a
+    week-old DraftKings number and made every game's line "drift" read as
+    0.0, since opener and "latest" were resolving to the same stale row).
+    The book-agnostic fallback used to `ORDER BY book` (alphabetical, blind
+    to recency) instead -- also wrong for the same reason, now fixed the
+    same way."""
     if prefer_book is not None:
         for line_type in ("current", "closing"):
             row = conn.execute(
                 "SELECT home_spread, total FROM betting_lines "
-                "WHERE game_id = ? AND line_type = ? AND book = ? AND home_spread IS NOT NULL",
+                "WHERE game_id = ? AND line_type = ? AND book = ? AND home_spread IS NOT NULL "
+                "ORDER BY fetched_at DESC LIMIT 1",
                 (game_id, line_type, prefer_book),
             ).fetchone()
             if row is not None:
@@ -60,7 +76,8 @@ def get_latest_line(conn, game_id, prefer_book=None):
     for line_type in ("current", "closing"):
         row = conn.execute(
             "SELECT home_spread, total FROM betting_lines "
-            "WHERE game_id = ? AND line_type = ? AND book = 'consensus'",
+            "WHERE game_id = ? AND line_type = ? AND book = 'consensus' "
+            "ORDER BY fetched_at DESC LIMIT 1",
             (game_id, line_type),
         ).fetchone()
         if row is not None and row[0] is not None:
@@ -69,7 +86,7 @@ def get_latest_line(conn, game_id, prefer_book=None):
         row = conn.execute(
             "SELECT home_spread, total, book FROM betting_lines "
             "WHERE game_id = ? AND line_type = ? AND home_spread IS NOT NULL "
-            "ORDER BY book LIMIT 1",
+            "ORDER BY fetched_at DESC LIMIT 1",
             (game_id, line_type),
         ).fetchone()
         if row is not None:
@@ -96,11 +113,24 @@ def get_opening_line_real_book(conn, game_id):
     (which want the single best available number for a live pick, and
     consensus is the right choice there -- see get_latest_line() above,
     unchanged). Returns None if none of the three real books has an
-    opener for this game (the caller must skip, not fall back further)."""
+    opener for this game (the caller must skip, not fall back further).
+
+    ORDER BY fetched_at ASC LIMIT 1 (oldest wins, opposite direction from
+    get_latest_line() above): 'opening' rows are write-once per week under
+    NORMAL operation (fetch_odds.opening_line_recorded() guards against a
+    second pull re-tagging one), so this was "safe" the same way
+    get_latest_line() was safe before real snapshots accumulated -- until
+    backfill_historical_lines.py --force re-ingests a week WITHOUT deleting
+    its old rows first, at which point duplicate 'opening' rows exist and
+    an unordered .fetchone() becomes exploitable the same way (external
+    review follow-up, accepted 2026-08-12). The TRUE opener is whichever
+    row was fetched FIRST, hence ASC -- not DESC, which would return the
+    duplicate closest to the --force re-run instead of the genuine open."""
     for book in REAL_BOOK_PREFERENCE:
         row = conn.execute(
             "SELECT home_spread, total FROM betting_lines "
-            "WHERE game_id = ? AND line_type = 'opening' AND book = ? AND home_spread IS NOT NULL",
+            "WHERE game_id = ? AND line_type = 'opening' AND book = ? AND home_spread IS NOT NULL "
+            "ORDER BY fetched_at ASC LIMIT 1",
             (game_id, book),
         ).fetchone()
         if row is not None:
