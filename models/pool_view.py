@@ -120,9 +120,12 @@ def build_pool_view(conn, pool_entries):
     }
 
 
+RANK_MIN, RANK_MAX = 1, 5
+
+
 def load_pool_entries(path):
     """Load pool picks from a CSV with header row:
-        game_id,home_team,away_team,pool_home_spread,picked_side
+        game_id,home_team,away_team,pool_home_spread,picked_side,rank
     game_id is OPTIONAL (added 2026-08-13) -- a blank cell is stored as
     None here and resolved later, in ingest_contest_csv(), via the same
     team-name-to-game_id join fetch_odds.py's own ingestion already uses
@@ -130,18 +133,38 @@ def load_pool_entries(path):
     friction). Left as a pure, DB-free CSV parser on purpose (see module
     docstring) -- resolving a blank game_id needs a database connection
     this function deliberately doesn't have, so that job belongs to
-    ingest_contest_csv(), not here. No other schema beyond these five
-    columns; extra columns are ignored."""
+    ingest_contest_csv(), not here.
+
+    rank is OPTIONAL and nullable (added 2026-08-13): a 1-5 confidence
+    ranking for the pick, recorded at lock time so post_game_audit.py can
+    report whether higher-confidence picks actually perform better, over
+    a season, than lower-confidence ones -- rather than that question
+    being answered from memory after the fact. A blank cell is None. Read
+    with .get() rather than indexing, so a CSV written before this column
+    existed (no 'rank' header at all) still loads instead of raising
+    KeyError -- every row just gets rank=None. Raises ValueError for a
+    present-but-out-of-[1,5]-range value here, at load time, rather than
+    letting a malformed CSV fail later with a less legible DB-level error.
+
+    No other schema beyond these six columns; extra columns are ignored."""
     entries = []
     with open(path, newline="", encoding="utf-8") as f:
         for row in csv.DictReader(f):
             raw_game_id = row["game_id"].strip()
+            raw_rank = (row.get("rank") or "").strip()
+            rank = int(raw_rank) if raw_rank else None
+            if rank is not None and not (RANK_MIN <= rank <= RANK_MAX):
+                raise ValueError(
+                    f"rank must be {RANK_MIN}-{RANK_MAX} or blank, got {rank!r} "
+                    f"for {row.get('home_team')} vs {row.get('away_team')} in {path}"
+                )
             entries.append({
                 "game_id": int(raw_game_id) if raw_game_id else None,
                 "home_team": row["home_team"].strip(),
                 "away_team": row["away_team"].strip(),
                 "pool_home_spread": float(row["pool_home_spread"]),
                 "picked_side": row["picked_side"].strip(),
+                "rank": rank,
             })
     return entries
 
@@ -195,7 +218,8 @@ def ingest_contest_csv(conn, csv_path, season, week, contest=DEFAULT_CONTEST):
     these rows. `unmatched` names every blank-game_id row that couldn't be
     resolved to a real game_id at all (see above) -- distinct from
     `skipped`, since these rows were never inserted in the first place,
-    not already-locked."""
+    not already-locked. rank (see load_pool_entries) is inserted as-is,
+    None or otherwise."""
     pool_entries = load_pool_entries(csv_path)
     schools = fetch_odds.load_school_names(conn)
     locked_at = datetime.utcnow().isoformat()
@@ -232,11 +256,11 @@ def ingest_contest_csv(conn, csv_path, season, week, contest=DEFAULT_CONTEST):
             "INSERT OR IGNORE INTO contest_entries ("
             "contest, season, week, game_id, raw_home_team, raw_away_team, "
             "normalized_home_team, normalized_away_team, locked_home_spread, "
-            "picked_side, locked_at, source"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "picked_side, rank, locked_at, source"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (contest, season, week, game_id, raw_home, raw_away,
              norm_home, norm_away, entry["pool_home_spread"], norm_side,
-             locked_at, source),
+             entry["rank"], locked_at, source),
         )
         if cur.rowcount:
             inserted += 1
@@ -256,20 +280,21 @@ def load_pool_entries_from_db(conn, season, week, contest=DEFAULT_CONTEST):
     correct_contest_entry()."""
     rows = conn.execute(
         "SELECT id, game_id, normalized_home_team, normalized_away_team, "
-        "locked_home_spread, picked_side FROM contest_entries "
+        "locked_home_spread, picked_side, rank FROM contest_entries "
         "WHERE contest = ? AND season = ? AND week = ? ORDER BY game_id",
         (contest, season, week),
     ).fetchall()
     return [
         {
             "entry_id": r[0], "game_id": r[1], "home_team": r[2], "away_team": r[3],
-            "pool_home_spread": r[4], "picked_side": r[5],
+            "pool_home_spread": r[4], "picked_side": r[5], "rank": r[6],
         }
         for r in rows
     ]
 
 
-def correct_contest_entry(conn, entry_id, reason, new_locked_home_spread=None, new_picked_side=None):
+def correct_contest_entry(conn, entry_id, reason, new_locked_home_spread=None, new_picked_side=None,
+                           new_rank=None):
     """The ONLY sanctioned way to change an already-locked contest_entries
     row (external review, accepted 2026-08-04). Writes the ORIGINAL values
     to contest_entry_corrections BEFORE touching contest_entries, so a
@@ -278,36 +303,47 @@ def correct_contest_entry(conn, entry_id, reason, new_locked_home_spread=None, n
     something that becomes unrecoverable just because it turned out to be
     a typo.
 
-    At least one of new_locked_home_spread/new_picked_side must be given;
-    the other stays unchanged. `reason` is required -- a correction with
-    no stated reason is exactly the kind of silent drift this exists to
-    prevent."""
+    new_rank (added 2026-08-13) gets the same immutability treatment as
+    locked_home_spread/picked_side, not looser handling just because it's
+    the user's own subjective confidence call: post_game_audit.py reports
+    performance BY rank over a season, and freely rewriting a rank after
+    the game is decided (hindsight "I knew it all along") would quietly
+    invalidate that report. RANK_MIN/RANK_MAX-checked here the same way
+    load_pool_entries() checks it, since this is a second entry point that
+    can set rank.
+
+    At least one of new_locked_home_spread/new_picked_side/new_rank must
+    be given; the others stay unchanged. `reason` is required -- a
+    correction with no stated reason is exactly the kind of silent drift
+    this exists to prevent."""
     if not reason or not reason.strip():
         raise ValueError("correct_contest_entry requires a non-empty reason")
-    if new_locked_home_spread is None and new_picked_side is None:
+    if new_locked_home_spread is None and new_picked_side is None and new_rank is None:
         raise ValueError("correct_contest_entry requires at least one corrected value")
+    if new_rank is not None and not (RANK_MIN <= new_rank <= RANK_MAX):
+        raise ValueError(f"new_rank must be {RANK_MIN}-{RANK_MAX}, got {new_rank!r}")
 
     row = conn.execute(
-        "SELECT locked_home_spread, picked_side FROM contest_entries WHERE id = ?",
+        "SELECT locked_home_spread, picked_side, rank FROM contest_entries WHERE id = ?",
         (entry_id,),
     ).fetchone()
     if row is None:
         raise ValueError(f"No contest_entries row with id {entry_id}")
-    original_spread, original_side = row
+    original_spread, original_side, original_rank = row
 
     corrected_at = datetime.utcnow().isoformat()
     conn.execute(
         "INSERT INTO contest_entry_corrections ("
-        "original_entry_id, original_locked_home_spread, original_picked_side, "
-        "corrected_locked_home_spread, corrected_picked_side, reason, corrected_at"
-        ") VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (entry_id, original_spread, original_side, new_locked_home_spread,
-         new_picked_side, reason, corrected_at),
+        "original_entry_id, original_locked_home_spread, original_picked_side, original_rank, "
+        "corrected_locked_home_spread, corrected_picked_side, corrected_rank, reason, corrected_at"
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (entry_id, original_spread, original_side, original_rank, new_locked_home_spread,
+         new_picked_side, new_rank, reason, corrected_at),
     )
     conn.execute(
         "UPDATE contest_entries SET locked_home_spread = COALESCE(?, locked_home_spread), "
-        "picked_side = COALESCE(?, picked_side), corrected_at = ? WHERE id = ?",
-        (new_locked_home_spread, new_picked_side, corrected_at, entry_id),
+        "picked_side = COALESCE(?, picked_side), rank = COALESCE(?, rank), corrected_at = ? WHERE id = ?",
+        (new_locked_home_spread, new_picked_side, new_rank, corrected_at, entry_id),
     )
     conn.commit()
 

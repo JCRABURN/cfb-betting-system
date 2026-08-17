@@ -33,6 +33,14 @@ decided cover) is NOT implemented here -- it needs play-by-play/scoring-
 drive timestamps CFBD exposes via a separate endpoint this project hasn't
 ingested. Flagging that gap explicitly rather than faking a heuristic for
 something this data can't actually show.
+
+Also grades the user's OWN pool picks (grade_contest_entries(), added
+2026-08-13) -- separate from the picks table above, straight ATS against
+each pick's locked_home_spread, broken out by the 1-5 confidence rank
+recorded in contest_entries.rank at pick time (see pool_view.py). The
+question this answers: does a higher self-rated confidence rank actually
+predict a better outcome over a season, or is it noise -- rather than
+that being a gut impression revisited from memory.
 """
 
 import os
@@ -152,6 +160,94 @@ def grade_pending_picks(conn, season, week):
     return graded, hooks
 
 
+def grade_contest_entries(conn, season, contest=None):
+    """Grades every contest_entries pick for `season` (optionally scoped to
+    one `contest`; None means every contest for that season) whose game is
+    complete, reusing backtest_harness.grade_ats() -- the exact same ATS
+    grading rules the model's own live picks and the historical backtest
+    both use, so a pool pick is graded under identical rules, not a
+    second, separately maintained implementation with its own
+    sign-convention risk (added 2026-08-13).
+
+    Straight ATS grading against the LOCKED spread -- this answers "did
+    the picked side cover the number actually locked at pick time," not a
+    CLV comparison against a later line the way grade_pending_picks does
+    for the model's own picks. There's no CLV concept for a pool pick:
+    the pool's own printed number at lock time IS the bet, not a market
+    entry point to be compared against where the line moved afterward.
+
+    Returns {"overall": {...}, "by_rank": {1: {...}, ..., 5: {...}, None:
+    {...}}} -- each bucket {"win", "loss", "push", "n", "win_pct"}, where
+    win_pct excludes pushes from the denominator (matching
+    build_dashboard.build_season_ledger's existing ats_pct convention).
+    `by_rank`'s whole reason to exist: whether a rank-1 (least confident)
+    pick actually performs differently than a rank-5 (most confident) one
+    over a season, rather than that question being answered from memory.
+    Only rank buckets that actually appear in the graded data are
+    included -- no synthetic zero-rows for a rank never used. A game not
+    yet final (games.completed=0, or no games row at all -- the JOIN
+    simply excludes it) is left out, same as grade_pending_picks -- not
+    an error, just nothing to grade yet."""
+    query = (
+        "SELECT ce.picked_side, ce.normalized_home_team, ce.normalized_away_team, "
+        "ce.locked_home_spread, ce.rank, g.home_points, g.away_points "
+        "FROM contest_entries ce "
+        "JOIN games g ON g.game_id = ce.game_id "
+        "WHERE ce.season = ? AND g.completed = 1"
+    )
+    params = [season]
+    if contest is not None:
+        query += " AND ce.contest = ?"
+        params.append(contest)
+
+    rows = conn.execute(query, params).fetchall()
+
+    def _new_bucket():
+        return {"win": 0, "loss": 0, "push": 0}
+
+    overall = _new_bucket()
+    by_rank = {}
+    for picked_side, home, away, spread, rank, home_pts, away_pts in rows:
+        if home_pts is None or away_pts is None:
+            continue
+        result = bh.grade_ats(picked_side, home, away, spread, home_pts, away_pts)
+        overall[result] += 1
+        by_rank.setdefault(rank, _new_bucket())[result] += 1
+
+    def _finalize(bucket):
+        decided = bucket["win"] + bucket["loss"]
+        return {
+            **bucket,
+            "n": bucket["win"] + bucket["loss"] + bucket["push"],
+            "win_pct": bucket["win"] / decided if decided else None,
+        }
+
+    return {
+        "overall": _finalize(overall),
+        "by_rank": {rank: _finalize(bucket) for rank, bucket in by_rank.items()},
+    }
+
+
+def format_rank_report(report):
+    """Human-readable "Rank 5: 4-1-0 (80.0%)" lines for the Monday audit's
+    console output, ranks descending (5 down to 1) then an "Unranked"
+    line for rank=None, then the overall total."""
+    lines = []
+    numeric_ranks = sorted((r for r in report["by_rank"] if r is not None), reverse=True)
+    for rank in numeric_ranks:
+        b = report["by_rank"][rank]
+        pct = f"{b['win_pct'] * 100:.1f}%" if b["win_pct"] is not None else "n/a"
+        lines.append(f"  Rank {rank}: {b['win']}-{b['loss']}-{b['push']} ({pct})")
+    if None in report["by_rank"]:
+        b = report["by_rank"][None]
+        pct = f"{b['win_pct'] * 100:.1f}%" if b["win_pct"] is not None else "n/a"
+        lines.append(f"  Unranked: {b['win']}-{b['loss']}-{b['push']} ({pct})")
+    o = report["overall"]
+    pct = f"{o['win_pct'] * 100:.1f}%" if o["win_pct"] is not None else "n/a"
+    lines.append(f"  Overall: {o['win']}-{o['loss']}-{o['push']} ({pct})")
+    return "\n".join(lines)
+
+
 def main():
     with db.log_run("post_game_audit") as run:
         conn = db.get_connection()
@@ -160,12 +256,18 @@ def main():
             scores = fetch_final_scores(season, week, conn=conn)
             scores_updated = persist_final_scores(conn, scores)
             graded, hooks = grade_pending_picks(conn, season, week)
+            rank_report = grade_contest_entries(conn, season)
         finally:
             conn.close()
 
         run["rows_added"] = graded
         print(f"Season {season} Week {week}: {scores_updated} game(s) scored, "
               f"{graded} pick(s) graded ({hooks} decided by a hook).")
+
+        if rank_report["overall"]["n"]:
+            print(f"\nContest pool performance by rank (season {season}, "
+                  f"{rank_report['overall']['n']} decided pick(s) so far):")
+            print(format_rank_report(rank_report))
 
 
 if __name__ == "__main__":

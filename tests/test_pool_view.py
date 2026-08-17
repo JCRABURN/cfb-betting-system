@@ -150,7 +150,7 @@ def test_load_pool_entries_reads_csv(tmp_path):
     assert len(entries) == 2
     assert entries[0] == {
         "game_id": 401636915, "home_team": "Oklahoma State", "away_team": "Arizona State",
-        "pool_home_spread": -1.0, "picked_side": "Oklahoma State",
+        "pool_home_spread": -1.0, "picked_side": "Oklahoma State", "rank": None,
     }
     assert entries[1]["pool_home_spread"] == -17.5
 
@@ -183,6 +183,164 @@ def test_load_pool_entries_ignores_extra_columns(tmp_path):
     assert "notes" not in entries[0]
 
 
+# ---------------------------------------------------------------------------
+# Optional confidence rank, 1-5 nullable (added 2026-08-13)
+# ---------------------------------------------------------------------------
+
+def test_load_pool_entries_reads_rank(tmp_path):
+    csv_path = tmp_path / "picks.csv"
+    csv_path.write_text(
+        "game_id,home_team,away_team,pool_home_spread,picked_side,rank\n"
+        "1,A,B,-3.0,A,5\n",
+        encoding="utf-8",
+    )
+    entries = pv.load_pool_entries(str(csv_path))
+    assert entries[0]["rank"] == 5
+
+
+def test_load_pool_entries_blank_rank_is_none(tmp_path):
+    csv_path = tmp_path / "picks.csv"
+    csv_path.write_text(
+        "game_id,home_team,away_team,pool_home_spread,picked_side,rank\n"
+        "1,A,B,-3.0,A,\n",
+        encoding="utf-8",
+    )
+    entries = pv.load_pool_entries(str(csv_path))
+    assert entries[0]["rank"] is None
+
+
+def test_load_pool_entries_missing_rank_column_entirely_is_none(tmp_path):
+    """Backward compatibility: a CSV written before this column existed
+    (no 'rank' header at all) must still load, not raise KeyError."""
+    csv_path = tmp_path / "picks.csv"
+    csv_path.write_text(
+        "game_id,home_team,away_team,pool_home_spread,picked_side\n"
+        "1,A,B,-3.0,A\n",
+        encoding="utf-8",
+    )
+    entries = pv.load_pool_entries(str(csv_path))
+    assert entries[0]["rank"] is None
+
+
+def test_load_pool_entries_rejects_rank_out_of_range(tmp_path):
+    csv_path = tmp_path / "picks.csv"
+    csv_path.write_text(
+        "game_id,home_team,away_team,pool_home_spread,picked_side,rank\n"
+        "1,A,B,-3.0,A,6\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError):
+        pv.load_pool_entries(str(csv_path))
+
+
+def test_load_pool_entries_rejects_rank_zero(tmp_path):
+    csv_path = tmp_path / "picks.csv"
+    csv_path.write_text(
+        "game_id,home_team,away_team,pool_home_spread,picked_side,rank\n"
+        "1,A,B,-3.0,A,0\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError):
+        pv.load_pool_entries(str(csv_path))
+
+
+def test_ingest_contest_csv_stores_rank(temp_db, tmp_path):
+    conn = temp_db.get_connection()
+    insert_team(conn, "X")
+    insert_team(conn, "Y")
+    conn.commit()
+
+    csv_path = tmp_path / "picks.csv"
+    write_pool_csv(csv_path, [
+        {"game_id": 1, "home_team": "X", "away_team": "Y", "pool_home_spread": -3.0,
+         "picked_side": "X", "rank": 4},
+    ])
+    pv.ingest_contest_csv(conn, str(csv_path), season=2026, week=1)
+
+    row = conn.execute("SELECT rank FROM contest_entries").fetchone()
+    conn.close()
+    assert row == (4,)
+
+
+def test_ingest_contest_csv_rank_defaults_to_null(temp_db, tmp_path):
+    conn = temp_db.get_connection()
+    insert_team(conn, "X")
+    insert_team(conn, "Y")
+    conn.commit()
+
+    csv_path = tmp_path / "picks.csv"
+    write_pool_csv(csv_path, [
+        {"game_id": 1, "home_team": "X", "away_team": "Y", "pool_home_spread": -3.0, "picked_side": "X"},
+    ])
+    pv.ingest_contest_csv(conn, str(csv_path), season=2026, week=1)
+
+    row = conn.execute("SELECT rank FROM contest_entries").fetchone()
+    conn.close()
+    assert row == (None,)
+
+
+def test_load_pool_entries_from_db_returns_rank(temp_db, tmp_path):
+    conn = temp_db.get_connection()
+    insert_team(conn, "X")
+    insert_team(conn, "Y")
+    conn.commit()
+
+    csv_path = tmp_path / "picks.csv"
+    write_pool_csv(csv_path, [
+        {"game_id": 1, "home_team": "X", "away_team": "Y", "pool_home_spread": -3.0,
+         "picked_side": "X", "rank": 2},
+    ])
+    pv.ingest_contest_csv(conn, str(csv_path), season=2026, week=1)
+
+    entries = pv.load_pool_entries_from_db(conn, season=2026, week=1)
+    conn.close()
+    assert entries[0]["rank"] == 2
+
+
+def test_correct_contest_entry_can_change_rank_preserving_original(temp_db, tmp_path):
+    conn = temp_db.get_connection()
+    insert_team(conn, "X")
+    insert_team(conn, "Y")
+    conn.commit()
+
+    csv_path = tmp_path / "picks.csv"
+    write_pool_csv(csv_path, [
+        {"game_id": 1, "home_team": "X", "away_team": "Y", "pool_home_spread": -3.0,
+         "picked_side": "X", "rank": 3},
+    ])
+    pv.ingest_contest_csv(conn, str(csv_path), season=2026, week=1)
+    entry_id = conn.execute("SELECT id FROM contest_entries").fetchone()[0]
+
+    pv.correct_contest_entry(conn, entry_id, reason="Misjudged confidence, actually my top pick",
+                              new_rank=5)
+
+    updated_rank = conn.execute("SELECT rank FROM contest_entries WHERE id = ?", (entry_id,)).fetchone()[0]
+    correction = conn.execute(
+        "SELECT original_rank, corrected_rank FROM contest_entry_corrections"
+    ).fetchone()
+    conn.close()
+
+    assert updated_rank == 5
+    assert correction == (3, 5)  # original preserved, corrected recorded
+
+
+def test_correct_contest_entry_rejects_rank_out_of_range(temp_db, tmp_path):
+    conn = temp_db.get_connection()
+    insert_team(conn, "X")
+    insert_team(conn, "Y")
+    conn.commit()
+    csv_path = tmp_path / "picks.csv"
+    write_pool_csv(csv_path, [
+        {"game_id": 1, "home_team": "X", "away_team": "Y", "pool_home_spread": -3.0, "picked_side": "X"},
+    ])
+    pv.ingest_contest_csv(conn, str(csv_path), season=2026, week=1)
+    entry_id = conn.execute("SELECT id FROM contest_entries").fetchone()[0]
+
+    with pytest.raises(ValueError):
+        pv.correct_contest_entry(conn, entry_id, reason="oops", new_rank=7)
+    conn.close()
+
+
 def test_no_model_fields_present():
     """build_pool_view() itself must never carry a model prediction/side/
     edge field -- it's a pure line-drift read (ARCHITECTURE.md §19-20: no
@@ -207,9 +365,10 @@ def insert_team(conn, school):
 
 def write_pool_csv(path, rows):
     with open(path, "w", newline="", encoding="utf-8") as f:
-        f.write("game_id,home_team,away_team,pool_home_spread,picked_side\n")
+        f.write("game_id,home_team,away_team,pool_home_spread,picked_side,rank\n")
         for r in rows:
-            f.write(f'{r["game_id"]},{r["home_team"]},{r["away_team"]},{r["pool_home_spread"]},{r["picked_side"]}\n')
+            f.write(f'{r["game_id"]},{r["home_team"]},{r["away_team"]},{r["pool_home_spread"]},'
+                     f'{r["picked_side"]},{r.get("rank", "")}\n')
 
 
 # ---------------------------------------------------------------------------

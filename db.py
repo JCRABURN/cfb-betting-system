@@ -258,6 +258,9 @@ CREATE TABLE IF NOT EXISTS contest_entries (
     normalized_away_team TEXT NOT NULL,
     locked_home_spread REAL NOT NULL,
     picked_side TEXT NOT NULL,
+    rank INTEGER,                        -- confidence rank 1-5, nullable; range enforced in
+                                          -- pool_view.py (app-level), not a DB CHECK constraint,
+                                          -- matching this schema's existing style
     locked_at TEXT NOT NULL,
     source TEXT NOT NULL,                -- e.g. 'csv:data/pool_picks/week_1_2026.csv'
     corrected_at TEXT,                   -- NULL unless correct_contest_entry() has touched this row
@@ -274,8 +277,10 @@ CREATE TABLE IF NOT EXISTS contest_entry_corrections (
     original_entry_id INTEGER NOT NULL,
     original_locked_home_spread REAL NOT NULL,
     original_picked_side TEXT NOT NULL,
+    original_rank INTEGER,
     corrected_locked_home_spread REAL,
     corrected_picked_side TEXT,
+    corrected_rank INTEGER,
     reason TEXT NOT NULL,
     corrected_at TEXT NOT NULL,
     FOREIGN KEY (original_entry_id) REFERENCES contest_entries(id)
@@ -298,6 +303,13 @@ _ADDED_COLUMNS = {
         ("offense_success_rate", "REAL"),
         ("defense_success_rate", "REAL"),
         ("havoc_rate", "REAL"),
+    ],
+    "contest_entries": [
+        ("rank", "INTEGER"),
+    ],
+    "contest_entry_corrections": [
+        ("original_rank", "INTEGER"),
+        ("corrected_rank", "INTEGER"),
     ],
 }
 
