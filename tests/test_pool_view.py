@@ -212,6 +212,119 @@ def write_pool_csv(path, rows):
             f.write(f'{r["game_id"]},{r["home_team"]},{r["away_team"]},{r["pool_home_spread"]},{r["picked_side"]}\n')
 
 
+# ---------------------------------------------------------------------------
+# Optional game_id, resolved via team names (added 2026-08-13)
+# ---------------------------------------------------------------------------
+
+def test_load_pool_entries_blank_game_id_is_none(tmp_path):
+    csv_path = tmp_path / "picks.csv"
+    csv_path.write_text(
+        "game_id,home_team,away_team,pool_home_spread,picked_side\n"
+        ",Oklahoma State,Arizona State,-1.0,Oklahoma State\n",
+        encoding="utf-8",
+    )
+    entries = pv.load_pool_entries(str(csv_path))
+    assert entries[0]["game_id"] is None
+
+
+def test_ingest_contest_csv_resolves_blank_game_id_from_team_names(temp_db, tmp_path):
+    conn = temp_db.get_connection()
+    insert_team(conn, "X")
+    insert_team(conn, "Y")
+    insert_game(conn, 555, 2026, 1, "X", "Y")
+    conn.commit()
+
+    csv_path = tmp_path / "picks.csv"
+    write_pool_csv(csv_path, [
+        {"game_id": "", "home_team": "X", "away_team": "Y", "pool_home_spread": -3.0, "picked_side": "X"},
+    ])
+
+    result = pv.ingest_contest_csv(conn, str(csv_path), season=2026, week=1)
+    row = conn.execute("SELECT game_id FROM contest_entries").fetchone()
+    conn.close()
+
+    assert result == {"inserted": 1, "skipped": [], "unmatched": []}
+    assert row == (555,)
+
+
+def test_ingest_contest_csv_resolves_blank_game_id_via_alias(temp_db, tmp_path):
+    """Resolution goes through fetch_odds.resolve_school_name() first, same
+    as the explicit-game_id path -- "Appalachian State" (the Odds-API-style
+    alias key) in the CSV must still find the game keyed on
+    games.home_team='App State' (the CFBD-canonical form, the alias's
+    value)."""
+    conn = temp_db.get_connection()
+    insert_team(conn, "App State")
+    insert_team(conn, "Georgia Southern")
+    insert_game(conn, 777, 2026, 1, "App State", "Georgia Southern")
+    conn.commit()
+
+    csv_path = tmp_path / "picks.csv"
+    write_pool_csv(csv_path, [
+        {"game_id": "", "home_team": "Appalachian State", "away_team": "Georgia Southern",
+         "pool_home_spread": -3.0, "picked_side": "Appalachian State"},
+    ])
+
+    result = pv.ingest_contest_csv(conn, str(csv_path), season=2026, week=1)
+    row = conn.execute("SELECT game_id FROM contest_entries").fetchone()
+    conn.close()
+
+    assert result["inserted"] == 1
+    assert row == (777,)
+
+
+def test_ingest_contest_csv_reports_unmatched_blank_game_id_rows(temp_db, tmp_path):
+    """No game exists for these team names/week/season -- must be reported
+    in `unmatched`, NOT silently dropped, and NOT inserted at all."""
+    conn = temp_db.get_connection()
+    insert_team(conn, "X")
+    insert_team(conn, "Y")
+    # Deliberately no matching row in `games` for (2026, week 1, X, Y).
+    conn.commit()
+
+    csv_path = tmp_path / "picks.csv"
+    write_pool_csv(csv_path, [
+        {"game_id": "", "home_team": "X", "away_team": "Y", "pool_home_spread": -3.0, "picked_side": "X"},
+    ])
+
+    result = pv.ingest_contest_csv(conn, str(csv_path), season=2026, week=1)
+    count = conn.execute("SELECT COUNT(*) FROM contest_entries").fetchone()[0]
+    conn.close()
+
+    assert result["inserted"] == 0
+    assert result["skipped"] == []
+    assert result["unmatched"] == [
+        {"raw_home_team": "X", "raw_away_team": "Y", "normalized_home_team": "X", "normalized_away_team": "Y"},
+    ]
+    assert count == 0
+
+
+def test_ingest_contest_csv_mixes_explicit_and_blank_game_id_in_one_file(temp_db, tmp_path):
+    """Explicit game_id rows must behave exactly as before, unaffected by
+    other rows in the same file needing resolution."""
+    conn = temp_db.get_connection()
+    insert_team(conn, "A")
+    insert_team(conn, "B")
+    insert_team(conn, "C")
+    insert_team(conn, "D")
+    insert_game(conn, 2, 2026, 1, "C", "D")  # only the blank-game_id row needs this
+    conn.commit()
+
+    csv_path = tmp_path / "picks.csv"
+    write_pool_csv(csv_path, [
+        {"game_id": 1, "home_team": "A", "away_team": "B", "pool_home_spread": -3.0, "picked_side": "A"},
+        {"game_id": "", "home_team": "C", "away_team": "D", "pool_home_spread": -6.0, "picked_side": "D"},
+    ])
+
+    result = pv.ingest_contest_csv(conn, str(csv_path), season=2026, week=1)
+    game_ids = {r[0] for r in conn.execute("SELECT game_id FROM contest_entries").fetchall()}
+    conn.close()
+
+    assert result["inserted"] == 2
+    assert result["unmatched"] == []
+    assert game_ids == {1, 2}
+
+
 def test_ingest_contest_csv_inserts_rows(temp_db, tmp_path):
     conn = temp_db.get_connection()
     insert_team(conn, "Oklahoma State")
@@ -227,7 +340,7 @@ def test_ingest_contest_csv_inserts_rows(temp_db, tmp_path):
     result = pv.ingest_contest_csv(conn, str(csv_path), season=2026, week=1)
     conn.close()
 
-    assert result == {"inserted": 1, "skipped": []}
+    assert result == {"inserted": 1, "skipped": [], "unmatched": []}
     conn = temp_db.get_connection()
     row = conn.execute(
         "SELECT contest, season, week, game_id, raw_home_team, normalized_home_team, "
@@ -261,8 +374,9 @@ def test_ingest_contest_csv_is_idempotent(temp_db, tmp_path):
     count = conn.execute("SELECT COUNT(*) FROM contest_entries").fetchone()[0]
     conn.close()
 
-    assert first == {"inserted": 1, "skipped": []}
-    assert second == {"inserted": 0, "skipped": [{"game_id": 1, "home_team": "X", "away_team": "Y"}]}
+    assert first == {"inserted": 1, "skipped": [], "unmatched": []}
+    assert second == {"inserted": 0, "skipped": [{"game_id": 1, "home_team": "X", "away_team": "Y"}],
+                       "unmatched": []}
     assert count == 1
 
 

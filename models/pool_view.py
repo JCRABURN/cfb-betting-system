@@ -123,17 +123,21 @@ def build_pool_view(conn, pool_entries):
 def load_pool_entries(path):
     """Load pool picks from a CSV with header row:
         game_id,home_team,away_team,pool_home_spread,picked_side
-    game_id must match the CFBD game_id in the `games` table (the same id
-    card_generator.py/gambling_view.py use) -- there's no team-name
-    resolution here the way fetch_odds.py has for the live odds feed, since
-    the user is entering these by hand and can look the id up once per
-    game rather than needing free-text matching. No other schema beyond
-    these five columns; extra columns are ignored."""
+    game_id is OPTIONAL (added 2026-08-13) -- a blank cell is stored as
+    None here and resolved later, in ingest_contest_csv(), via the same
+    team-name-to-game_id join fetch_odds.py's own ingestion already uses
+    (looking a game_id up by hand for every pick each week was real
+    friction). Left as a pure, DB-free CSV parser on purpose (see module
+    docstring) -- resolving a blank game_id needs a database connection
+    this function deliberately doesn't have, so that job belongs to
+    ingest_contest_csv(), not here. No other schema beyond these five
+    columns; extra columns are ignored."""
     entries = []
     with open(path, newline="", encoding="utf-8") as f:
         for row in csv.DictReader(f):
+            raw_game_id = row["game_id"].strip()
             entries.append({
-                "game_id": int(row["game_id"]),
+                "game_id": int(raw_game_id) if raw_game_id else None,
                 "home_team": row["home_team"].strip(),
                 "away_team": row["away_team"].strip(),
                 "pool_home_spread": float(row["pool_home_spread"]),
@@ -165,16 +169,33 @@ def ingest_contest_csv(conn, csv_path, season, week, contest=DEFAULT_CONTEST):
     first, since that's the exact string the CSV commits to; resolved
     independently only if it matches neither).
 
+    game_id is OPTIONAL (added 2026-08-13): a row with a blank game_id
+    (see load_pool_entries) is resolved via fetch_odds.find_game_id()
+    against the NORMALIZED team names for this (season, week) -- the same
+    join fetch_odds.py's own live-odds ingestion already relies on, so a
+    pick can be entered from team names alone instead of requiring a
+    manual game_id lookup every week. A row WITH an explicit game_id skips
+    this resolution entirely and behaves exactly as before. A row whose
+    game_id can't be resolved this way is reported in `unmatched`, never
+    silently dropped -- a pool pick that never makes it into
+    contest_entries because of a team-name typo is exactly the kind of
+    gap that must be loud, not quiet.
+
     Returns {"inserted": <count of NEW rows>, "skipped": [{"game_id",
-    "home_team", "away_team"}, ...]} -- `skipped` names, explicitly, every
-    row whose (contest, season, week, game_id) was already locked from an
-    earlier ingest and therefore left untouched. This is NOT an error --
-    it's the correct, intended behavior for e.g. a workflow re-run -- but
-    it needs to be visible, not silent: a caller who edited the CSV to fix
-    a typo and re-ran this expecting the fix to take needs to see that
-    nothing changed, not just an unremarkable inserted=0 (external review
-    follow-up, accepted 2026-08-05). Use correct_contest_entry() to
-    actually change one of these rows."""
+    "home_team", "away_team"}, ...], "unmatched": [{"raw_home_team",
+    "raw_away_team", "normalized_home_team", "normalized_away_team"}, ...]}.
+    `skipped` names, explicitly, every row whose (contest, season, week,
+    game_id) was already locked from an earlier ingest and therefore left
+    untouched. This is NOT an error -- it's the correct, intended behavior
+    for e.g. a workflow re-run -- but it needs to be visible, not silent:
+    a caller who edited the CSV to fix a typo and re-ran this expecting
+    the fix to take needs to see that nothing changed, not just an
+    unremarkable inserted=0 (external review follow-up, accepted
+    2026-08-05). Use correct_contest_entry() to actually change one of
+    these rows. `unmatched` names every blank-game_id row that couldn't be
+    resolved to a real game_id at all (see above) -- distinct from
+    `skipped`, since these rows were never inserted in the first place,
+    not already-locked."""
     pool_entries = load_pool_entries(csv_path)
     schools = fetch_odds.load_school_names(conn)
     locked_at = datetime.utcnow().isoformat()
@@ -182,6 +203,7 @@ def ingest_contest_csv(conn, csv_path, season, week, contest=DEFAULT_CONTEST):
 
     inserted = 0
     skipped = []
+    unmatched = []
     for entry in pool_entries:
         raw_home = entry["home_team"]
         raw_away = entry["away_team"]
@@ -196,22 +218,32 @@ def ingest_contest_csv(conn, csv_path, season, week, contest=DEFAULT_CONTEST):
         else:
             norm_side = fetch_odds.resolve_school_name(schools, raw_side)
 
+        game_id = entry["game_id"]
+        if game_id is None:
+            game_id = fetch_odds.find_game_id(conn, week, season, norm_home, norm_away)
+            if game_id is None:
+                unmatched.append({
+                    "raw_home_team": raw_home, "raw_away_team": raw_away,
+                    "normalized_home_team": norm_home, "normalized_away_team": norm_away,
+                })
+                continue
+
         cur = conn.execute(
             "INSERT OR IGNORE INTO contest_entries ("
             "contest, season, week, game_id, raw_home_team, raw_away_team, "
             "normalized_home_team, normalized_away_team, locked_home_spread, "
             "picked_side, locked_at, source"
             ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (contest, season, week, entry["game_id"], raw_home, raw_away,
+            (contest, season, week, game_id, raw_home, raw_away,
              norm_home, norm_away, entry["pool_home_spread"], norm_side,
              locked_at, source),
         )
         if cur.rowcount:
             inserted += 1
         else:
-            skipped.append({"game_id": entry["game_id"], "home_team": raw_home, "away_team": raw_away})
+            skipped.append({"game_id": game_id, "home_team": raw_home, "away_team": raw_away})
     conn.commit()
-    return {"inserted": inserted, "skipped": skipped}
+    return {"inserted": inserted, "skipped": skipped, "unmatched": unmatched}
 
 
 def load_pool_entries_from_db(conn, season, week, contest=DEFAULT_CONTEST):
@@ -364,6 +396,18 @@ def main():
                     print(
                         f"{len(result['skipped'])} row(s) already locked, not modified -- "
                         f"use correct_contest_entry() to change a locked line: {games}"
+                    )
+                if result["unmatched"]:
+                    games = ", ".join(
+                        f'{u["raw_away_team"]} @ {u["raw_home_team"]} '
+                        f'(resolved to "{u["normalized_away_team"]}" @ "{u["normalized_home_team"]}", '
+                        f'no matching game_id found)'
+                        for u in result["unmatched"]
+                    )
+                    print(
+                        f"WARNING: {len(result['unmatched'])} row(s) had no game_id and couldn't be "
+                        f"matched to a game for season={season} week={week} -- NOT ingested, fix the "
+                        f"team names or provide game_id directly: {games}"
                     )
             else:
                 print(f"No pool-picks file at {csv_path} yet -- reading whatever's already locked.")
