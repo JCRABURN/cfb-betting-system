@@ -85,9 +85,9 @@ def test_integrity_check_runs_before_commit():
 def test_backup_artifact_uploaded_before_any_mutation():
     for name in WORKFLOW_FILES:
         text = _read(name)
-        assert "actions/upload-artifact@v4" in text
+        assert "actions/upload-artifact@" in text  # version-agnostic on purpose -- don't pin a major here
         assert "retention-days: 14" in text
-        artifact_pos = text.index("actions/upload-artifact@v4")
+        artifact_pos = text.index("actions/upload-artifact@")
         for marker in ("python data/fetch_stats.py", "python data/fetch_odds.py",
                        "python models/post_game_audit.py", "python models/pool_view.py"):
             if marker in text:
