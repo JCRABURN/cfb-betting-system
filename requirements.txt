@@ -1,2 +1,8 @@
 requests
 pytest
+openpyxl  # parses the committed data/nfl_historical_odds/*.xlsx archive (real .xlsx
+          # files, not CSV) -- a stdlib-only parser would mean hand-writing an OOXML
+          # zip+XML reader (shared-strings table, sheet XML, cell-ref parsing, type
+          # coercion): a well-known, easy-to-get-wrong undertaking duplicating a
+          # small, stable, pure-Python library built for exactly this. Read-only use
+          # here, no write-back, so the dependency surface is minimal.

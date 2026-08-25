@@ -73,10 +73,20 @@ CREATE TABLE IF NOT EXISTS games (
 
 -- One row per book per line pull. Never updated in place, only appended,
 -- so line movement is a query (ORDER BY fetched_at) instead of a bolt-on field.
+-- Shared across both sports (external review follow-up, NFL scope accepted
+-- 2026-08-24): `league` ('cfb' | 'nfl') is the only thing distinguishing a
+-- row's sport -- game_id references `games` for league='cfb' rows and
+-- `nfl_games` for league='nfl' rows (SQLite doesn't enforce a single FK
+-- target across two tables, same as the existing best-effort game_id
+-- already tolerates NULL on a failed join). Every query that reads this
+-- table for one sport MUST filter on league explicitly -- see
+-- test_no_mixed_league_rows.py.
 CREATE TABLE IF NOT EXISTS betting_lines (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    game_id INTEGER,              -- best-effort FK to games.game_id; nullable if the
-                                    -- team-name join between odds and CFBD data failed
+    game_id INTEGER,              -- best-effort FK to games.game_id (cfb) or
+                                    -- nfl_games.game_id (nfl); nullable if the
+                                    -- team-name join failed
+    league TEXT NOT NULL DEFAULT 'cfb',  -- 'cfb' | 'nfl'
     season INTEGER,
     week INTEGER,
     home_team TEXT NOT NULL,
@@ -86,10 +96,9 @@ CREATE TABLE IF NOT EXISTS betting_lines (
     total REAL,
     home_moneyline INTEGER,
     away_moneyline INTEGER,
-    line_type TEXT NOT NULL,       -- opening | current
+    line_type TEXT NOT NULL,       -- opening | current | closing
     source TEXT NOT NULL,
-    fetched_at TEXT NOT NULL,
-    FOREIGN KEY (game_id) REFERENCES games(game_id)
+    fetched_at TEXT NOT NULL
 );
 
 -- Season-to-date snapshot (SP+, EPA, success rate, havoc rate, records), one
@@ -214,6 +223,59 @@ CREATE TABLE IF NOT EXISTS supplemental_game_dates (
 CREATE INDEX IF NOT EXISTS idx_supplemental_game_dates_lookup
     ON supplemental_game_dates (team, season, week);
 
+-- NFL schedule/results (added 2026-08-24, NFL scope): deliberately a
+-- SEPARATE table from `games`, not a shared table with a league marker --
+-- nflverse's own game_id is a string ("1999_01_MIN_ATL"), incompatible
+-- with `games.game_id`'s INTEGER PRIMARY KEY (CFBD's own numeric ids), so
+-- there is no clean way to share the table even if the two-model
+-- architecture decision hadn't already called for separate stats tables.
+-- Sourced from nflverse's own games.csv (data/backfill_nfl_games.py),
+-- which is also this project's source for the NFL closing line -- see
+-- betting_lines' league column.
+CREATE TABLE IF NOT EXISTS nfl_games (
+    game_id TEXT PRIMARY KEY,      -- nflverse's own id, e.g. '2024_01_ARI_BUF'
+    season INTEGER NOT NULL,
+    week INTEGER NOT NULL,
+    game_type TEXT,                -- REG | WC | DIV | CON | SB
+    gameday TEXT,
+    home_team TEXT NOT NULL,       -- nflverse's 2-3 letter code, e.g. 'BUF'
+    away_team TEXT NOT NULL,
+    home_score INTEGER,
+    away_score INTEGER,
+    completed INTEGER DEFAULT 0,
+    source TEXT NOT NULL,
+    fetched_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_nfl_games_season_week
+    ON nfl_games (season, week);
+
+-- NFL point-in-time weekly team stats (added 2026-08-24, NFL scope): the
+-- NFL analog of team_game_stats' cfbd_point_in_time rows, but computed
+-- locally rather than fetched pre-aggregated -- nflverse's play-by-play is
+-- raw, not a vendor rating, so there is no SP+-style "blocked, no history"
+-- problem here (see the feasibility research, 2026-08-24): any
+-- cumulative-through-week-N cut is just an aggregation over that team's
+-- own plays in games from weeks < N. A row with week=N holds stats
+-- cumulative THROUGH week N, same "join against week N-1, never week N
+-- itself" discipline as get_team_stats_as_of() -- see
+-- data/backfill_nfl_pbp_stats.py.
+CREATE TABLE IF NOT EXISTS nfl_team_stats (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    season INTEGER NOT NULL,
+    week INTEGER NOT NULL,
+    team TEXT NOT NULL,
+    offense_epa_play REAL,
+    defense_epa_play REAL,
+    offense_success_rate REAL,
+    defense_success_rate REAL,
+    source TEXT NOT NULL,
+    fetched_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_nfl_team_stats_lookup
+    ON nfl_team_stats (source, team, season, week);
+
 -- Raw API response archival (external review, accepted 2026-08-04): every
 -- CFBD/Odds API request's raw response body, gzip-compressed (SQLite has
 -- no native compression). Purpose: when the next parser bug surfaces
@@ -310,6 +372,12 @@ _ADDED_COLUMNS = {
     "contest_entry_corrections": [
         ("original_rank", "INTEGER"),
         ("corrected_rank", "INTEGER"),
+    ],
+    "betting_lines": [
+        # DEFAULT 'cfb' backfills every already-committed row correctly --
+        # 100% of betting_lines rows written before this column existed
+        # genuinely are college football data.
+        ("league", "TEXT NOT NULL DEFAULT 'cfb'"),
     ],
 }
 
