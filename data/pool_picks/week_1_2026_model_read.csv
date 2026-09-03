@@ -1,44 +1,44 @@
-game_num,day,away_team,home_team,game_id,pool_home_spread,pool_total,model_home_spread,model_side,model_edge,model_confidence
-1,Thu,Massachusetts,Rutgers,401858423,-29.5,51.5,-29.0,Massachusetts,18.34,no_pick_extrapolation
-2,Thu,Akron,Wake Forest,401858204,-24.5,48.5,-27.2,Akron,18.2,no_pick_extrapolation
-3,Thu,Colorado,Georgia Tech,401856776,-6.5,50.5,-6.5,Georgia Tech,3.87,low_confidence_prior_season_data
-4,Thu,UAB,Illinois,401858424,-27.5,55.5,-27.5,UAB,18.31,no_pick_extrapolation
-5,Fri,San José State,Eastern Michigan,401864495,-3.5,54.5,-2.8,Eastern Michigan,0.06,low_confidence_prior_season_data
-6,Fri,UTEP,Oklahoma,401856664,-41.5,50.5,-41.2,UTEP,30.05,no_pick_extrapolation
-7,Fri,Toledo,Michigan State,401858429,-10.5,46.5,-10.2,Toledo,19.53,no_pick_extrapolation
-8,Fri,Fresno State,USC,401858436,-21.5,51.5,-21.8,Fresno State,10.11,no_pick_extrapolation
-9,Fri,Miami,Stanford,401858206,24.5,47.5,24.3,Stanford,16.81,no_pick_extrapolation
-10,Sat,North Texas,Indiana,401858425,-40.5,55.5,-40.5,North Texas,33.84,no_pick_extrapolation
-11,Sat,Coastal Carolina,West Virginia,401856780,-21.5,56.5,-21.2,Coastal Carolina,16.78,no_pick_extrapolation
-12,Sat,Ohio,Nebraska,401858430,-24.5,47.5,-23.5,Ohio,23.48,no_pick_extrapolation
-13,Sat,Oregon State,Houston,401856778,-20.5,50.5,-20.8,Oregon State,12.23,no_pick_extrapolation
-14,Sat,East Carolina,Alabama,401856634,-28.5,53.5,-28.0,East Carolina,23.96,no_pick_extrapolation
-15,Sat,Liberty,James Madison,401869960,-8.5,52.5,-6.3,James Madison,6.26,low_confidence_prior_season_data
-16,Sat,Miami (OH),Pittsburgh,401858207,-16.5,48.5,-16.5,Miami (OH),10.59,no_pick_extrapolation
-17,Sat,Ball State,Ohio State,401858432,-50.5,56.5,-50.5,Ball State,27.39,no_pick_extrapolation
-18,Sat,Kent State,South Carolina,401856665,-36.5,54.5,-35.8,Kent State,27.99,no_pick_extrapolation
-19,Sat,Marshall,Penn State,401858434,-24.5,53.5,-24.0,Marshall,17.24,no_pick_extrapolation
-20,Sat,Boston College,Cincinnati,401856777,-7.5,49.5,-7.5,Cincinnati,2.75,low_confidence_prior_season_data
-21,Sat,Texas State,Texas,401856667,-30.5,60.5,-29.5,Texas State,28.39,no_pick_extrapolation
-22,Sat,Boise State,Oregon,401858433,-24.5,51.5,-24.5,Boise State,11.8,no_pick_extrapolation
-23,Sat,Tulane,Duke,401858209,-9.5,51.5,-7.5,Tulane,6.97,low_confidence_prior_season_data
-24,Sat,Baylor,Auburn,401856636,-7.5,58.5,-7.5,Baylor,0.73,low_confidence_prior_season_data
-25,Sat,Oklahoma State,Tulsa,401856772,13.5,59.5,13.5,Tulsa,25.49,no_pick_extrapolation
-26,Sat,Northern Illinois,Iowa,401858426,-31.5,45.5,-31.5,Northern Illinois,19.07,no_pick_extrapolation
-27,Sat,Wyoming,Colorado State,401860878,-3.5,46.5,-3.2,Wyoming,2.49,low_confidence_prior_season_data
-28,Sat,Florida International,South Florida,401862699,-13.5,51.5,-14.5,Florida International,1.47,low_confidence_prior_season_data
-29,Sat,Sam Houston,Troy,401870763,-16.5,53.5,-16.5,Sam Houston,6.16,low_confidence_prior_season_data
-30,Sat,Missouri State,Texas A&M,401856668,-41.5,53.5,-40.7,Missouri State,29.87,no_pick_extrapolation
-31,Sat,Arkansas State,Memphis,401862695,-9.5,52.5,-11.5,Arkansas State,1.24,low_confidence_prior_season_data
-32,Sat,Clemson,LSU,401856660,-10.5,51.5,-10.2,Clemson,10.49,no_pick_extrapolation
-33,Sat,UL Monroe,Mississippi State,401856662,-28.5,54.5,-28.5,UL Monroe,23.43,no_pick_extrapolation
-34,Sat,Western Michigan,Michigan,401858428,-27.5,48.5,-27.5,Western Michigan,20.87,no_pick_extrapolation
-35,Sat,Florida Atlantic,Florida,401856637,-26.5,59.5,-26.5,Florida Atlantic,22.19,no_pick_extrapolation
-36,Sat,Central Michigan,New Mexico,401864498,-10.5,46.5,-10.7,Central Michigan,7.99,low_confidence_prior_season_data
-37,Sat,UNLV,Hawai'i,401864497,3.5,58.5,3.2,Hawai'i,4.59,low_confidence_prior_season_data
-38,Sat,UCLA,California,401858210,1.5,53.5,1.7,California,7.96,low_confidence_prior_season_data
-39,Sat,Western Kentucky,Nevada,401864432,2.5,52.5,1.3,Western Kentucky,3.0,low_confidence_prior_season_data
-40,Sun,Washington State,Washington,401858437,-23.5,50.5,-23.5,Washington State,13.77,no_pick_extrapolation
-41,Sun,Wisconsin,Notre Dame,401858438,-20.5,47.5,-20.5,Notre Dame,0.51,low_confidence_prior_season_data
-42,Sun,Louisville,Ole Miss,401856661,-8.5,55.5,-6.7,Louisville,0.12,low_confidence_prior_season_data
-43,Mon,SMU,Florida State,401858212,3.5,53.5,2.8,Florida State,3.09,low_confidence_prior_season_data
+game_num,day,away_team,home_team,game_id,pool_home_spread,pool_total,model_home_spread,model_pick,model_edge,recommendation,confidence_flag
+1,Thu,Massachusetts,Rutgers,401858423,-29.5,51.5,-29.0,Massachusetts,18.34,not_recommended_extrapolation,no_pick_extrapolation
+2,Thu,Akron,Wake Forest,401858204,-24.5,48.5,-27.2,Akron,18.2,not_recommended_extrapolation,no_pick_extrapolation
+3,Thu,Colorado,Georgia Tech,401856776,-6.5,50.5,-6.5,Georgia Tech,3.87,recommended_low_confidence,low_confidence_prior_season_data
+4,Thu,UAB,Illinois,401858424,-27.5,55.5,-27.5,UAB,18.31,not_recommended_extrapolation,no_pick_extrapolation
+5,Fri,San José State,Eastern Michigan,401864495,-3.5,54.5,-2.8,Eastern Michigan,0.06,recommended_low_confidence,low_confidence_prior_season_data
+6,Fri,UTEP,Oklahoma,401856664,-41.5,50.5,-41.2,UTEP,30.05,not_recommended_extrapolation,no_pick_extrapolation
+7,Fri,Toledo,Michigan State,401858429,-10.5,46.5,-10.2,Toledo,19.53,not_recommended_extrapolation,no_pick_extrapolation
+8,Fri,Fresno State,USC,401858436,-21.5,51.5,-21.8,Fresno State,10.11,not_recommended_extrapolation,no_pick_extrapolation
+9,Fri,Miami,Stanford,401858206,24.5,47.5,24.3,Stanford,16.81,not_recommended_extrapolation,no_pick_extrapolation
+10,Sat,North Texas,Indiana,401858425,-40.5,55.5,-40.5,North Texas,33.84,not_recommended_extrapolation,no_pick_extrapolation
+11,Sat,Coastal Carolina,West Virginia,401856780,-21.5,56.5,-21.2,Coastal Carolina,16.78,not_recommended_extrapolation,no_pick_extrapolation
+12,Sat,Ohio,Nebraska,401858430,-24.5,47.5,-23.5,Ohio,23.48,not_recommended_extrapolation,no_pick_extrapolation
+13,Sat,Oregon State,Houston,401856778,-20.5,50.5,-20.8,Oregon State,12.23,not_recommended_extrapolation,no_pick_extrapolation
+14,Sat,East Carolina,Alabama,401856634,-28.5,53.5,-28.0,East Carolina,23.96,not_recommended_extrapolation,no_pick_extrapolation
+15,Sat,Liberty,James Madison,401869960,-8.5,52.5,-6.3,James Madison,6.26,recommended_low_confidence,low_confidence_prior_season_data
+16,Sat,Miami (OH),Pittsburgh,401858207,-16.5,48.5,-16.5,Miami (OH),10.59,not_recommended_extrapolation,no_pick_extrapolation
+17,Sat,Ball State,Ohio State,401858432,-50.5,56.5,-50.5,Ball State,27.39,not_recommended_extrapolation,no_pick_extrapolation
+18,Sat,Kent State,South Carolina,401856665,-36.5,54.5,-35.8,Kent State,27.99,not_recommended_extrapolation,no_pick_extrapolation
+19,Sat,Marshall,Penn State,401858434,-24.5,53.5,-24.0,Marshall,17.24,not_recommended_extrapolation,no_pick_extrapolation
+20,Sat,Boston College,Cincinnati,401856777,-7.5,49.5,-7.5,Cincinnati,2.75,recommended_low_confidence,low_confidence_prior_season_data
+21,Sat,Texas State,Texas,401856667,-30.5,60.5,-29.5,Texas State,28.39,not_recommended_extrapolation,no_pick_extrapolation
+22,Sat,Boise State,Oregon,401858433,-24.5,51.5,-24.5,Boise State,11.8,not_recommended_extrapolation,no_pick_extrapolation
+23,Sat,Tulane,Duke,401858209,-9.5,51.5,-7.5,Tulane,6.97,recommended_low_confidence,low_confidence_prior_season_data
+24,Sat,Baylor,Auburn,401856636,-7.5,58.5,-7.5,Baylor,0.73,recommended_low_confidence,low_confidence_prior_season_data
+25,Sat,Oklahoma State,Tulsa,401856772,13.5,59.5,13.5,Tulsa,25.49,not_recommended_extrapolation,no_pick_extrapolation
+26,Sat,Northern Illinois,Iowa,401858426,-31.5,45.5,-31.5,Northern Illinois,19.07,not_recommended_extrapolation,no_pick_extrapolation
+27,Sat,Wyoming,Colorado State,401860878,-3.5,46.5,-3.2,Wyoming,2.49,recommended_low_confidence,low_confidence_prior_season_data
+28,Sat,Florida International,South Florida,401862699,-13.5,51.5,-14.5,Florida International,1.47,recommended_low_confidence,low_confidence_prior_season_data
+29,Sat,Sam Houston,Troy,401870763,-16.5,53.5,-16.5,Sam Houston,6.16,recommended_low_confidence,low_confidence_prior_season_data
+30,Sat,Missouri State,Texas A&M,401856668,-41.5,53.5,-40.7,Missouri State,29.87,not_recommended_extrapolation,no_pick_extrapolation
+31,Sat,Arkansas State,Memphis,401862695,-9.5,52.5,-11.5,Arkansas State,1.24,recommended_low_confidence,low_confidence_prior_season_data
+32,Sat,Clemson,LSU,401856660,-10.5,51.5,-10.2,Clemson,10.49,not_recommended_extrapolation,no_pick_extrapolation
+33,Sat,UL Monroe,Mississippi State,401856662,-28.5,54.5,-28.5,UL Monroe,23.43,not_recommended_extrapolation,no_pick_extrapolation
+34,Sat,Western Michigan,Michigan,401858428,-27.5,48.5,-27.5,Western Michigan,20.87,not_recommended_extrapolation,no_pick_extrapolation
+35,Sat,Florida Atlantic,Florida,401856637,-26.5,59.5,-26.5,Florida Atlantic,22.19,not_recommended_extrapolation,no_pick_extrapolation
+36,Sat,Central Michigan,New Mexico,401864498,-10.5,46.5,-10.7,Central Michigan,7.99,recommended_low_confidence,low_confidence_prior_season_data
+37,Sat,UNLV,Hawai'i,401864497,3.5,58.5,3.2,Hawai'i,4.59,recommended_low_confidence,low_confidence_prior_season_data
+38,Sat,UCLA,California,401858210,1.5,53.5,1.7,California,7.96,recommended_low_confidence,low_confidence_prior_season_data
+39,Sat,Western Kentucky,Nevada,401864432,2.5,52.5,1.3,Western Kentucky,3.0,recommended_low_confidence,low_confidence_prior_season_data
+40,Sun,Washington State,Washington,401858437,-23.5,50.5,-23.5,Washington State,13.77,not_recommended_extrapolation,no_pick_extrapolation
+41,Sun,Wisconsin,Notre Dame,401858438,-20.5,47.5,-20.5,Notre Dame,0.51,recommended_low_confidence,low_confidence_prior_season_data
+42,Sun,Louisville,Ole Miss,401856661,-8.5,55.5,-6.7,Louisville,0.12,recommended_low_confidence,low_confidence_prior_season_data
+43,Mon,SMU,Florida State,401858212,3.5,53.5,2.8,Florida State,3.09,recommended_low_confidence,low_confidence_prior_season_data
