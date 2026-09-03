@@ -56,6 +56,9 @@ KNOWN_TEAM_ALIASES = {
     "Appalachian State": "App State",
     "UMass": "Massachusetts",
     "Southern Mississippi": "Southern Miss",
+    "Louisiana-Monroe": "UL Monroe",
+    "Louisiana Monroe": "UL Monroe",
+    "UL-Monroe": "UL Monroe",
 }
 
 

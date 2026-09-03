@@ -3,7 +3,7 @@ from fetch_odds import resolve_school_name, has_games_this_week, filter_by_week
 SCHOOLS = [
     "TCU", "USC", "NC State", "Ohio", "Ohio State", "Miami", "Miami (OH)",
     "Albany", "Georgia", "Texas", "Hawai'i", "Massachusetts", "Southern Miss",
-    "App State", "San José State",
+    "App State", "San José State", "UL Monroe",
 ]
 
 
@@ -53,6 +53,14 @@ def test_known_aliases_with_no_shared_prefix():
     assert resolve_school_name(SCHOOLS, "Appalachian State Mountaineers") == "App State"
     assert resolve_school_name(SCHOOLS, "UMass Minutemen") == "Massachusetts"
     assert resolve_school_name(SCHOOLS, "Southern Mississippi Golden Eagles") == "Southern Miss"
+
+
+def test_alias_resolves_louisiana_monroe_spellings():
+    # A pool sheet spelled it "Louisiana-Monroe"; CFBD's own name is "UL Monroe"
+    # (found ingesting the real Sep 3-7 2026 SplashSports slate).
+    assert resolve_school_name(SCHOOLS, "Louisiana-Monroe Warhawks") == "UL Monroe"
+    assert resolve_school_name(SCHOOLS, "Louisiana Monroe Warhawks") == "UL Monroe"
+    assert resolve_school_name(SCHOOLS, "UL-Monroe Warhawks") == "UL Monroe"
 
 
 def test_alias_not_used_if_canonical_name_missing_from_schools():
