@@ -41,16 +41,26 @@ from line_utils import get_latest_line
 
 DEFAULT_CONTEST = "pool"
 
-# Confidence flags card_generator.py never treats as a real signal (large
-# edge, prior-season fallback, or extrapolation past the model's reliable
-# range -- ARCHITECTURE.md sect;19-20/sect;25). rank_pool_picks() excludes
+# Confidence flags that mean card_generator.py has NO usable signal at all
+# (backtest-confirmed worst buckets, ARCHITECTURE.md sect;19-20, or a
+# decision not to present a number, sect;25) -- rank_pool_picks() excludes
 # any pool pick whose matching card game carries one of these outright,
-# not just denies it a tiebreaker -- these are exactly the model's
-# least-reliable slices, so they shouldn't influence which pool picks get
-# surfaced as strongest (external review's one accepted gap, closed this
-# project's own way: drift confirmation over model edge, 2026-08-04).
-POOL_RANKING_LOW_CONFIDENCE_FLAGS = {
-    "low_confidence_large_edge", "low_confidence_prior_season_data", "no_pick_extrapolation",
+# not just denies it a tiebreaker (external review's one accepted gap,
+# closed this project's own way: drift confirmation over model edge,
+# 2026-08-04).
+#
+# "low_confidence_prior_season_data" is deliberately NOT in this set
+# (corrected 2026-09-03): it's real week-1 calibration, not a no-signal
+# state -- the Model Picks dashboard board and card_generator itself both
+# treat it as an actual pick, just flagged, never suppressed. Excluding it
+# here meant this board could never show anything for the entirety of
+# week 1, every season, since every week-1 game carries this flag by
+# construction (no in-season stats exist yet). A pool pick matching one of
+# these games is now ELIGIBLE, ranked as usual on drift -- the dashboard
+# renders the same low-confidence badge card_generator's own board uses,
+# rather than hiding the pick.
+POOL_RANKING_EXCLUDED_FLAGS = {
+    "low_confidence_large_edge", "no_pick_extrapolation",
 }
 POOL_RANKING_SIZE = 5
 
@@ -360,20 +370,24 @@ def rank_pool_picks(pool_view, card=None):
     likes equally (external review's one accepted gap, closed this
     project's own way, 2026-08-04).
 
-    A pool pick whose matching card game is flagged low-confidence (large
-    edge, prior-season fallback, or no-pick-extrapolation --
-    POOL_RANKING_LOW_CONFIDENCE_FLAGS) is EXCLUDED entirely, not just
-    denied its tiebreaker. A pool pick with no matching card game at all
-    (no model output this week, or a game the model didn't line) is still
-    eligible -- it simply ranks on drift alone, no edge tiebreak.
+    A pool pick whose matching card game has NO usable model signal at all
+    (large edge or no-pick-extrapolation -- POOL_RANKING_EXCLUDED_FLAGS) is
+    EXCLUDED entirely, not just denied its tiebreaker. A pool pick flagged
+    "low_confidence_prior_season_data" IS eligible (corrected 2026-09-03,
+    see POOL_RANKING_EXCLUDED_FLAGS) -- it's a real pick, just week-1
+    calibrated, so it ranks normally and carries `confidence` through for
+    the dashboard to badge. A pool pick with no matching card game at all
+    (no model output this week, or a game the model didn't line) is also
+    still eligible -- it simply ranks on drift alone, no edge tiebreak.
 
     `card`, if given: card_generator.build_card()'s return value. None
     (or no matching flagged games) is fine -- ranking degrades to
     drift-only for every pick.
 
     Returns up to POOL_RANKING_SIZE entries -- each pool_view game dict
-    plus `edge` (None if no usable model signal) and `rank` (1 = strongest)
-    -- best drift-confirmation first."""
+    plus `edge` (None if no usable model signal), `confidence` (None if no
+    matching card game), and `rank` (1 = strongest) -- best
+    drift-confirmation first."""
     confidence_by_game = {}
     edge_by_game = {}
     if card:
@@ -383,9 +397,13 @@ def rank_pool_picks(pool_view, card=None):
 
     eligible = []
     for g in pool_view["games"]:
-        if confidence_by_game.get(g["game_id"]) in POOL_RANKING_LOW_CONFIDENCE_FLAGS:
+        if confidence_by_game.get(g["game_id"]) in POOL_RANKING_EXCLUDED_FLAGS:
             continue
-        eligible.append({**g, "edge": edge_by_game.get(g["game_id"])})
+        eligible.append({
+            **g,
+            "edge": edge_by_game.get(g["game_id"]),
+            "confidence": confidence_by_game.get(g["game_id"]),
+        })
 
     eligible.sort(
         key=lambda g: (g["signed_drift_vs_pick"], g["edge"] if g["edge"] is not None else float("-inf")),

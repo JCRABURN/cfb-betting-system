@@ -293,19 +293,29 @@ def _pool_ranking_rows(ranked):
     """External review's one accepted gap, closed this project's own way
     (2026-08-04): pool_view.rank_pool_picks() ranks the pool's OWN locked
     picks by drift confirmation, model edge as tiebreak only. `edge` is
-    None for a pick with no matching (or a low-confidence, already-
-    excluded) card game -- rendered as an em-dash, not a fabricated
-    number."""
+    None for a pick with no matching (or no-signal, already-excluded) card
+    game -- rendered as an em-dash, not a fabricated number.
+
+    A pick flagged "low_confidence_prior_season_data" (corrected
+    2026-09-03: no longer excluded, see pool_view.POOL_RANKING_EXCLUDED_FLAGS)
+    gets the same "low-conf" pill the Model Picks board uses -- shown, not
+    hidden, since it's week-1 calibration on a real pick, not a no-signal
+    state."""
     if not ranked:
         return None
     rows = []
     for g in ranked:
         edge_str = f'{g["edge"]:.1f}' if g["edge"] is not None else "&mdash;"
+        badge = (
+            ' <span class="pill low-conf" title="Uses prior-season final EPA -- '
+            'no in-season data exists yet (Week 1)">low conf.</span>'
+            if g.get("confidence") == "low_confidence_prior_season_data" else ""
+        )
         rows.append(
             f'<tr><td class="num mono">{g["rank"]}</td>'
             f'<td class="matchup"><span class="away">{_esc(g["away_team"])}</span>'
             f'<span class="at">@</span>{_esc(g["home_team"])}</td>'
-            f'<td>{_esc(g["picked_side"])}</td>'
+            f'<td>{_esc(g["picked_side"])}{badge}</td>'
             f'<td class="num mono">{g["signed_drift_vs_pick"]:+.1f}</td>'
             f'<td class="num mono">{edge_str}</td></tr>'
         )
@@ -436,8 +446,8 @@ def render_dashboard(season, week, card, gambling, pool, ranked, ledger, healths
     if ranking_rows is None:
         ranking_body = (
             '<div class="empty-state">No ranked picks yet &mdash; either no pool picks are '
-            "locked for this week, or every locked pick's matching model game is flagged "
-            "low-confidence and excluded from this board.</div>"
+            "locked for this week, or every locked pick's matching model game shows no usable "
+            "signal at all (large edge or extrapolation) and is excluded from this board.</div>"
         )
     else:
         ranking_body = (
@@ -525,7 +535,7 @@ def render_dashboard(season, week, card, gambling, pool, ranked, ledger, healths
       <div><div class="eyebrow headline">Headline &middot; Your Pool</div><h2 class="display">Ranked Pool Picks</h2></div>
       <div class="asof mono">drift confirmation, edge as tiebreak only</div>
     </div>
-    <p class="dek">Your own locked picks, ranked by how much the market has confirmed them since lock. Model edge only breaks a tie between two equally-confirmed picks &mdash; it never outranks the market read. Picks whose model game is flagged low-confidence are left off this board entirely.</p>
+    <p class="dek">Your own locked picks, ranked by how much the market has confirmed them since lock. Model edge only breaks a tie between two equally-confirmed picks &mdash; it never outranks the market read. Picks whose model game shows no usable signal at all (large edge or extrapolation) are left off this board entirely; a week-1 pick still ranks, flagged low-confidence.</p>
     {ranking_body}
   </section>
 

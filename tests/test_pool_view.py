@@ -786,17 +786,39 @@ def test_rank_pool_picks_uses_edge_only_as_tiebreaker():
     assert [g["game_id"] for g in ranked2] == [1, 2]
 
 
-def test_rank_pool_picks_excludes_low_confidence_flagged_games():
+def test_rank_pool_picks_excludes_no_signal_flagged_games():
     pool = {"games": [
         {"game_id": 1, "signed_drift_vs_pick": 10.0},  # best drift, but flagged
-        {"game_id": 2, "signed_drift_vs_pick": 1.0},
+        {"game_id": 2, "signed_drift_vs_pick": 5.0},  # also flagged
+        {"game_id": 3, "signed_drift_vs_pick": 1.0},
     ]}
     card = make_card([
         {"game_id": 1, "confidence": "low_confidence_large_edge", "edge": 15.0},
+        {"game_id": 2, "confidence": "no_pick_extrapolation", "edge": 20.0},
+        {"game_id": 3, "confidence": "standard", "edge": 2.0},
+    ])
+    ranked = pv.rank_pool_picks(pool, card)
+    assert [g["game_id"] for g in ranked] == [3]
+
+
+def test_rank_pool_picks_includes_prior_season_data_picks_flagged():
+    """Corrected 2026-09-03: low_confidence_prior_season_data is real week-1
+    calibration, not a no-signal state (unlike low_confidence_large_edge and
+    no_pick_extrapolation, which stay excluded above) -- it must rank
+    normally, not disappear, or this board can never show anything for the
+    entirety of week 1 every season."""
+    pool = {"games": [
+        {"game_id": 1, "signed_drift_vs_pick": 5.0},
+        {"game_id": 2, "signed_drift_vs_pick": 1.0},
+    ]}
+    card = make_card([
+        {"game_id": 1, "confidence": "low_confidence_prior_season_data", "edge": 3.0},
         {"game_id": 2, "confidence": "standard", "edge": 2.0},
     ])
     ranked = pv.rank_pool_picks(pool, card)
-    assert [g["game_id"] for g in ranked] == [2]
+    assert [g["game_id"] for g in ranked] == [1, 2]
+    assert ranked[0]["confidence"] == "low_confidence_prior_season_data"
+    assert ranked[1]["confidence"] == "standard"
 
 
 def test_rank_pool_picks_keeps_games_with_no_card_match():

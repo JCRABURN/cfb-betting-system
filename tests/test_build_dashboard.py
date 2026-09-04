@@ -194,6 +194,21 @@ def test_render_dashboard_no_prior_season_banner_when_nothing_flagged():
     assert "prior-season EPA" not in html
 
 
+def test_render_dashboard_pool_ranking_shows_low_confidence_pick_flagged_not_hidden():
+    """Corrected 2026-09-03: a pool pick whose matching card game is
+    low_confidence_prior_season_data must still appear on the Ranked Pool
+    Picks board (badged), not be excluded -- see
+    pool_view.POOL_RANKING_EXCLUDED_FLAGS."""
+    ranked = [
+        {"game_id": 1, "away_team": "A", "home_team": "B", "picked_side": "B",
+         "signed_drift_vs_pick": 2.0, "edge": 3.0,
+         "confidence": "low_confidence_prior_season_data", "rank": 1},
+    ]
+    html = bd.render_dashboard(2026, 1, None, None, None, ranked, None, _healths(), "2026-08-04T14:00:00")
+    assert "No ranked picks yet" not in html
+    assert "low conf." in html
+
+
 def test_render_dashboard_no_pick_extrapolation_hides_side_and_edge():
     card = {
         "games": [
