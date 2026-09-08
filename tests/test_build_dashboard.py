@@ -12,15 +12,15 @@ def insert_run(conn, source, status, finished_at, error=None):
     )
 
 
-def insert_pick(conn, game_id, season, result, unit_pl, clv=None, key_factors="[]"):
+def insert_pick(conn, game_id, season, result, unit_pl, clv=None, key_factors="[]", qualifies=1):
     conn.execute(
         "INSERT INTO games (game_id, season, week, home_team, away_team) VALUES (?, ?, 5, 'A', 'B')",
         (game_id, season),
     )
     conn.execute(
         "INSERT INTO picks (game_id, week, year, home_team, away_team, status, result, unit_pl, clv, "
-        "key_factors, pick_type, created_at) VALUES (?, 5, ?, 'A', 'B', 'settled', ?, ?, ?, ?, 'live', 'now')",
-        (game_id, season, result, unit_pl, clv, key_factors),
+        "key_factors, qualifies, pick_type, created_at) VALUES (?, 5, ?, 'A', 'B', 'settled', ?, ?, ?, ?, ?, 'live', 'now')",
+        (game_id, season, result, unit_pl, clv, key_factors, qualifies),
     )
 
 
@@ -125,7 +125,24 @@ def test_ledger_only_counts_current_season(temp_db):
     conn.close()
 
     assert ledger["n"] == 1
-    assert ledger["losses"] == 1
+
+
+def test_ledger_excludes_non_qualifying_picks(temp_db):
+    """Corrected 2026-09-08: a no_pick_extrapolation game now gets a real,
+    graded `picks` row (qualifies=0) so its outcome is trackable -- but it
+    must never inflate the headline ATS/ROI numbers, which is exactly what
+    it was suppressed FROM counting as in the first place."""
+    conn = temp_db.get_connection()
+    insert_pick(conn, 1, 2026, "win", 0.909, qualifies=1)
+    insert_pick(conn, 2, 2026, "loss", -1.0, qualifies=0)
+    conn.commit()
+
+    ledger = bd.build_season_ledger(conn, 2026)
+    conn.close()
+
+    assert ledger["n"] == 1
+    assert ledger["wins"] == 1
+    assert ledger["losses"] == 0
 
 
 # ---------------------------------------------------------------------------

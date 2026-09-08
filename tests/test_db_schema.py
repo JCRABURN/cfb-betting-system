@@ -233,6 +233,45 @@ def test_betting_lines_migration_backfills_existing_rows_to_cfb():
     assert league == "cfb"
 
 
+def test_backfill_qualifies_column_fixes_pre_fix_rows_not_real_no_picks(temp_db):
+    """_backfill_qualifies_column() (2026-09-08): every `picks` row written
+    before card_generator.py started using `qualifies` meaningfully has
+    qualifies=0 with no "no_pick_extrapolation" in confidence_signals --
+    a pre-fix row mislabeled by the old hardcoded-0 default, not a genuine
+    suppressed no-pick. Must get corrected to 1. A row that DOES carry
+    "no_pick_extrapolation" is a real no-pick under the new semantics and
+    must be left at 0, even though it's also qualifies=0 -- the
+    discriminator is confidence_signals content, not the qualifies value
+    alone. init_db() (called again here) must be safe to re-run without
+    re-flipping a genuine no-pick."""
+    conn = temp_db.get_connection()
+    conn.execute(
+        "INSERT INTO games (game_id, season, week, home_team, away_team) VALUES (1, 2026, 1, 'A', 'B')"
+    )
+    conn.execute(
+        "INSERT INTO games (game_id, season, week, home_team, away_team) VALUES (2, 2026, 1, 'C', 'D')"
+    )
+    conn.execute(
+        "INSERT INTO picks (game_id, week, year, home_team, away_team, confidence_signals, "
+        "qualifies, status, pick_type, created_at) VALUES "
+        "(1, 1, 2026, 'A', 'B', '[\"standard\"]', 0, 'pending', 'live', 'earlier')"
+    )
+    conn.execute(
+        "INSERT INTO picks (game_id, week, year, home_team, away_team, confidence_signals, "
+        "qualifies, status, pick_type, created_at) VALUES "
+        "(2, 1, 2026, 'C', 'D', '[\"no_pick_extrapolation\"]', 0, 'pending', 'live', 'now')"
+    )
+    conn.commit()
+
+    temp_db.init_db()
+
+    rows = dict(conn.execute("SELECT game_id, qualifies FROM picks ORDER BY game_id").fetchall())
+    conn.close()
+
+    assert rows[1] == 1  # pre-fix row, mislabeled -- corrected
+    assert rows[2] == 0  # genuine no-pick under new semantics -- left alone
+
+
 def test_no_mixed_league_rows(temp_db):
     """The isolation guarantee the whole shared-table design depends on:
     a league-scoped query must never return the other sport's rows.

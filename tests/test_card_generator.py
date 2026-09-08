@@ -297,10 +297,10 @@ def test_persist_picks_to_db_inserts_one_row_per_game(temp_db):
     conn.commit()
 
     card = cg.build_card(conn, 2023, 5)
-    rows_added, rows_retracted = cg.persist_picks_to_db(conn, card)
+    rows_added, rows_updated = cg.persist_picks_to_db(conn, card)
 
     assert rows_added == len(card["games"]) == 3
-    assert rows_retracted == 0
+    assert rows_updated == 0
     stored = conn.execute("SELECT COUNT(*) FROM picks WHERE pick_type = 'live'").fetchone()[0]
     conn.close()
     assert stored == 3
@@ -318,19 +318,20 @@ def test_persist_picks_to_db_stores_correct_fields(temp_db):
     g10 = next(g for g in card["games"] if g["game_id"] == 10)
     row = conn.execute(
         "SELECT week, year, home_team, away_team, consensus_spread, projected_spread, "
-        "edge, recommended_side, status, pick_type, confidence_signals FROM picks WHERE game_id = 10"
+        "edge, recommended_side, status, pick_type, confidence_signals, qualifies "
+        "FROM picks WHERE game_id = 10"
     ).fetchone()
     conn.close()
 
     assert row == (
         5, 2023, "E", "F", g10["market_home_spread"], g10["predicted_home_margin"],
-        g10["edge"], g10["side"], "pending", "live", '["standard"]',
+        g10["edge"], g10["side"], "pending", "live", '["standard"]', 1,
     )
 
 
 def test_persist_picks_to_db_is_idempotent(temp_db):
     """Re-running the card generator mid-week must not duplicate picks for
-    games it already recorded."""
+    games it already recorded (numbers unchanged, so no UPDATE fires either)."""
     conn = temp_db.get_connection()
     build_training_fixture(conn)
     build_target_week_fixture(conn)
@@ -338,13 +339,14 @@ def test_persist_picks_to_db_is_idempotent(temp_db):
 
     card = cg.build_card(conn, 2023, 5)
     first, _ = cg.persist_picks_to_db(conn, card)
-    second, _ = cg.persist_picks_to_db(conn, card)
+    second, second_updated = cg.persist_picks_to_db(conn, card)
 
     total = conn.execute("SELECT COUNT(*) FROM picks WHERE pick_type = 'live'").fetchone()[0]
     conn.close()
 
     assert first == 3
     assert second == 0
+    assert second_updated == 0
     assert total == 3
 
 
@@ -515,7 +517,12 @@ def test_non_week1_large_edge_is_unaffected_by_extrapolation_suppression(temp_db
     assert card["flagged_no_pick_extrapolation"] == []
 
 
-def test_no_pick_extrapolation_games_excluded_from_persisted_picks(temp_db):
+def test_no_pick_extrapolation_games_still_get_a_persisted_row_qualifies_zero(temp_db):
+    """Corrected 2026-09-08: a no_pick_extrapolation game still gets a
+    persisted, gradeable `picks` row -- omitting it entirely (the old
+    behavior) meant its real-world outcome was tracked nowhere. qualifies=0
+    marks it as a suppressed no-pick, not a genuine recommendation, so
+    build_season_ledger()'s headline numbers are unaffected."""
     conn = temp_db.get_connection()
     build_training_fixture(conn)
     insert_stats(conn, 2022, 15, "E", 0.50, 0.0)
@@ -525,24 +532,27 @@ def test_no_pick_extrapolation_games_excluded_from_persisted_picks(temp_db):
     conn.commit()
 
     card = cg.build_card(conn, 2023, 1)
-    rows_added, rows_retracted = cg.persist_picks_to_db(conn, card)
+    rows_added, rows_updated = cg.persist_picks_to_db(conn, card)
 
-    stored = conn.execute("SELECT COUNT(*) FROM picks WHERE pick_type = 'live'").fetchone()[0]
+    row = conn.execute(
+        "SELECT qualifies, confidence_signals FROM picks WHERE pick_type = 'live'"
+    ).fetchone()
     conn.close()
 
     assert card["games"][0]["confidence"] == "no_pick_extrapolation"
-    assert rows_added == 0
-    assert rows_retracted == 0  # nothing stale to retract -- this is the first run
-    assert stored == 0
+    assert rows_added == 1
+    assert rows_updated == 0
+    assert row == (0, '["no_pick_extrapolation"]')
 
 
-def test_no_pick_extrapolation_retracts_a_stale_pending_pick_from_an_earlier_run(temp_db):
+def test_no_pick_extrapolation_updates_a_pending_pick_from_an_earlier_run(temp_db):
     """The real scenario this exists for: an earlier run persisted a
-    pending pick before this game's edge crossed the no-pick threshold
-    (the line moved, or -- as literally happened 2026-08-04 -- the
-    suppression rule didn't exist yet). Re-running the card generator
-    must retract that stale row, not leave it to be graded Monday as a
-    real recommendation."""
+    pending pick as a genuine recommendation before this game's edge
+    crossed the no-pick threshold (the line moved, or -- as literally
+    happened 2026-08-04 -- the suppression rule didn't exist yet).
+    Re-running the card generator must flip its qualifies to 0 in place,
+    not leave it looking like a real recommendation for Monday's audit --
+    but it stays a real row, still graded, just correctly marked."""
     conn = temp_db.get_connection()
     build_training_fixture(conn)
     insert_stats(conn, 2022, 15, "E", 0.50, 0.0)
@@ -554,25 +564,28 @@ def test_no_pick_extrapolation_retracts_a_stale_pending_pick_from_an_earlier_run
     # Simulate a stale row from before this game was classified no_pick_extrapolation.
     conn.execute(
         "INSERT INTO picks (game_id, week, year, home_team, away_team, edge, recommended_side, "
-        "status, pick_type, created_at) VALUES (10, 1, 2023, 'E', 'F', 39.5, 'E', 'pending', 'live', 'earlier')"
+        "confidence_signals, qualifies, status, pick_type, created_at) VALUES "
+        "(10, 1, 2023, 'E', 'F', 20.0, 'E', '[\"low_confidence_prior_season_data\"]', 1, "
+        "'pending', 'live', 'earlier')"
     )
     conn.commit()
-    assert conn.execute("SELECT COUNT(*) FROM picks WHERE pick_type = 'live'").fetchone()[0] == 1
 
     card = cg.build_card(conn, 2023, 1)
-    rows_added, rows_retracted = cg.persist_picks_to_db(conn, card)
+    rows_added, rows_updated = cg.persist_picks_to_db(conn, card)
 
-    stored = conn.execute("SELECT COUNT(*) FROM picks WHERE pick_type = 'live'").fetchone()[0]
+    row = conn.execute(
+        "SELECT qualifies, confidence_signals, edge FROM picks WHERE pick_type = 'live'"
+    ).fetchone()
     conn.close()
 
     assert rows_added == 0
-    assert rows_retracted == 1
-    assert stored == 0  # the stale pending row is gone, not left around
+    assert rows_updated == 1
+    assert row == (0, '["no_pick_extrapolation"]', 39.5)
 
 
-def test_no_pick_extrapolation_never_retracts_a_settled_pick(temp_db):
-    """Only status='pending' rows are ever retracted -- a real settled
-    result from a genuine past decision must never be deleted, even if
+def test_no_pick_extrapolation_never_updates_a_settled_pick(temp_db):
+    """Only status='pending' rows are ever updated -- a real settled
+    result from a genuine past decision must never be rewritten, even if
     the game would now classify as no_pick_extrapolation."""
     conn = temp_db.get_connection()
     build_training_fixture(conn)
@@ -584,16 +597,17 @@ def test_no_pick_extrapolation_never_retracts_a_settled_pick(temp_db):
 
     conn.execute(
         "INSERT INTO picks (game_id, week, year, home_team, away_team, edge, recommended_side, "
-        "status, result, pick_type, created_at) VALUES "
-        "(10, 1, 2023, 'E', 'F', 39.5, 'E', 'settled', 'win', 'live', 'earlier')"
+        "qualifies, status, result, pick_type, created_at) VALUES "
+        "(10, 1, 2023, 'E', 'F', 39.5, 'E', 1, 'settled', 'win', 'live', 'earlier')"
     )
     conn.commit()
 
     card = cg.build_card(conn, 2023, 1)
-    rows_added, rows_retracted = cg.persist_picks_to_db(conn, card)
+    rows_added, rows_updated = cg.persist_picks_to_db(conn, card)
 
-    stored = conn.execute("SELECT status, result FROM picks WHERE pick_type = 'live'").fetchone()
+    stored = conn.execute("SELECT status, result, qualifies FROM picks WHERE pick_type = 'live'").fetchone()
     conn.close()
 
-    assert rows_retracted == 0
-    assert stored == ("settled", "win")
+    assert rows_added == 0
+    assert rows_updated == 0
+    assert stored == ("settled", "win", 1)  # untouched, even though it'd now classify as no_pick_extrapolation

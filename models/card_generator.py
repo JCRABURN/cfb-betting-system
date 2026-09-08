@@ -21,13 +21,24 @@ confidence. The §19-20 bucket analysis already showed edge>=10 is the
 model's worst-performing slice on real in-season data; stacking a
 prior-season-fallback input under an already-unreliable large edge is
 worse, not just doubly-flagged, so these are shown as "no pick" rather
-than a big number dressed up to look like a strong signal. Excluded from
-`persist_picks_to_db()` entirely -- a "no pick" doesn't get a pending
-`picks` row to be graded as if it were a real recommendation, and any
-STALE pending row an earlier run already persisted for a game that now
-crosses this threshold gets retracted, not left around. See
-`_assign_confidence()`'s docstring for exactly where this sits relative
-to the other two confidence states.
+than a big number dressed up to look like a strong signal.
+
+Every game still gets a persisted `picks` row via `persist_picks_to_db()`
+(corrected 2026-09-08: previously no_pick_extrapolation games got NO row
+at all, which meant they were never graded and their real-world outcome
+was never tracked anywhere -- the opposite of "the model picks every
+game, so it can learn whether the suppression rule holds up"; confirmed
+live, only 21 of 49 real Week 1 2026 games ever had a trackable row).
+`qualifies` (an INTEGER column inherited from the old pre-EPA-only
+weighted model, unused/always 0 before this) now marks whether a row is a
+genuine recommendation (1) or a suppressed no-pick (0) --
+build_season_ledger() filters to qualifies=1 so the "official" ATS/ROI
+record is exactly what it was before this change, while
+post_game_audit.py grades every row regardless of qualifies, so the
+suppressed bucket's real performance is visible in the DB even though it
+never counts toward the headline numbers. See `_assign_confidence()`'s
+docstring for exactly where no_pick_extrapolation sits relative to the
+other two confidence states.
 
 Reuses the SAME fitted model as the validated backtest (backtest_harness.py
 + baseline_epa.py) -- intercept+coefficient fit via OLS on seasons strictly
@@ -239,72 +250,92 @@ def build_card(conn, season, week):
 
 
 def persist_picks_to_db(conn, card):
-    """Insert a pending `picks` row per card game, for post_game_audit.py to
-    grade once the week's games finish. Idempotent: skips any game that
-    already has a pick_type='live' row (pending or settled) for this
-    game_id, so re-running the card generator mid-week doesn't duplicate.
+    """Insert (or update) a `picks` row per card game, for post_game_audit.py
+    to grade once the week's games finish -- EVERY game, including
+    "no_pick_extrapolation" ones (corrected 2026-09-08, see module
+    docstring). `qualifies` marks whether the row is a genuine
+    recommendation (1) or a suppressed no-pick (0); build_season_ledger()
+    filters to qualifies=1 so this never inflates the "official" record.
 
-    "no_pick_extrapolation" games get no NEW pending row -- a "no pick"
-    doesn't get graded as if it were a real recommendation. They ALSO
-    retract any pending row a PRIOR run already persisted for that
-    game_id: an edge can cross the no-pick threshold between runs (the
-    line moves, or -- as happened 2026-08-04 -- the suppression rule
-    didn't exist yet when an earlier run persisted it), and leaving a
-    stale pending pick around would have Monday's audit grade a game we
-    now explicitly decline to pick. Only ever touches status='pending'
-    rows -- a real settled result from a genuine past decision is never
-    retroactively deleted.
+    Idempotent per game_id, but not frozen at first-persist like before:
+    a game with no existing pick_type='live' row gets one INSERTed. A game
+    that already has a row gets it UPDATEd (consensus_spread,
+    projected_spread, edge, recommended_side, confidence_signals,
+    qualifies) to this run's numbers, IF that row is still 'pending' --
+    an edge (and therefore qualifies) can cross the no-pick threshold
+    between runs as the line moves, and the persisted row should reflect
+    the latest known classification at kickoff, not whatever the first
+    run happened to compute. A 'settled' row (game already final) is
+    NEVER touched -- a real past decision's graded result is never
+    rewritten, no matter how this run would reclassify it.
 
     Reuses the existing `picks` table (designed for the pre-EPA-only
     weighted model) pragmatically rather than migrating the schema:
     consensus_spread <- market_home_spread, projected_spread <-
-    predicted_home_margin, recommended_side <- side, and the new
-    confidence flag is stored in confidence_signals (declared as a
-    JSON-encoded list; holds a 1-item list here, e.g. ["standard"]).
-    units/key_factors/weather/risk_flags/qualifies don't apply to this
-    model and are left at their inapplicable defaults (0/empty/NULL/False)
+    predicted_home_margin, recommended_side <- side, and the confidence
+    flag is stored in confidence_signals (JSON-encoded 1-item list, e.g.
+    ["standard"]). units/key_factors/weather/risk_flags don't apply to
+    this model and are left at their inapplicable defaults (0/empty/NULL)
     rather than populated with invented values.
 
-    Returns (rows_added, rows_retracted)."""
+    Returns (rows_added, rows_updated)."""
     import json
     from datetime import datetime
 
     now = datetime.utcnow().isoformat()
     rows_added = 0
-    rows_retracted = 0
+    rows_updated = 0
     for game in card["games"]:
-        if game["confidence"] == "no_pick_extrapolation":
-            cur = conn.execute(
-                "DELETE FROM picks WHERE game_id = ? AND pick_type = 'live' AND status = 'pending'",
-                (game["game_id"],),
-            )
-            rows_retracted += cur.rowcount
-            continue
-        exists = conn.execute(
-            "SELECT 1 FROM picks WHERE game_id = ? AND pick_type = 'live'",
+        qualifies = 0 if game["confidence"] == "no_pick_extrapolation" else 1
+        confidence_signals = json.dumps([game["confidence"]])
+        existing = conn.execute(
+            "SELECT id, status, consensus_spread, projected_spread, edge, recommended_side, "
+            "confidence_signals, qualifies FROM picks WHERE game_id = ? AND pick_type = 'live'",
             (game["game_id"],),
         ).fetchone()
-        if exists:
+
+        if existing is None:
+            conn.execute(
+                """
+                INSERT INTO picks (
+                    game_id, week, year, home_team, away_team,
+                    consensus_spread, projected_spread, edge, recommended_side,
+                    units, confidence_signals, key_factors, line_movement, weather,
+                    risk_flags, qualifies, status, pick_type, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, '[]', NULL, '{}', '[]', ?, 'pending', 'live', ?)
+                """,
+                (
+                    game["game_id"], card["week"], card["season"],
+                    game["home_team"], game["away_team"],
+                    game["market_home_spread"], game["predicted_home_margin"], game["edge"],
+                    game["side"], confidence_signals, qualifies, now,
+                ),
+            )
+            rows_added += 1
             continue
+
+        (pick_id, status, old_spread, old_margin, old_edge,
+         old_side, old_signals, old_qualifies) = existing
+        if status != "pending":
+            continue
+        if (old_spread, old_margin, old_edge, old_side, old_signals, old_qualifies) == (
+            game["market_home_spread"], game["predicted_home_margin"], game["edge"],
+            game["side"], confidence_signals, qualifies,
+        ):
+            continue  # nothing changed since it was last persisted -- no-op, not a write
+
         conn.execute(
-            """
-            INSERT INTO picks (
-                game_id, week, year, home_team, away_team,
-                consensus_spread, projected_spread, edge, recommended_side,
-                units, confidence_signals, key_factors, line_movement, weather,
-                risk_flags, qualifies, status, pick_type, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, '[]', NULL, '{}', '[]', 0, 'pending', 'live', ?)
-            """,
+            "UPDATE picks SET consensus_spread = ?, projected_spread = ?, edge = ?, "
+            "recommended_side = ?, confidence_signals = ?, qualifies = ? WHERE id = ?",
             (
-                game["game_id"], card["week"], card["season"],
-                game["home_team"], game["away_team"],
                 game["market_home_spread"], game["predicted_home_margin"], game["edge"],
-                game["side"], json.dumps([game["confidence"]]), now,
+                game["side"], confidence_signals, qualifies, pick_id,
             ),
         )
-        rows_added += 1
+        rows_updated += 1
+
     conn.commit()
-    return rows_added, rows_retracted
+    return rows_added, rows_updated
 
 
 def main():
@@ -326,7 +357,7 @@ def main():
         conn = db.get_connection()
         try:
             card = build_card(conn, season, week)
-            rows_added, rows_retracted = persist_picks_to_db(conn, card)
+            rows_added, rows_updated = persist_picks_to_db(conn, card)
             run["rows_added"] = rows_added
         finally:
             conn.close()
@@ -338,9 +369,10 @@ def main():
 
         print(f"Season {season} Week {week}: {len(card['games'])} lined games "
               f"({len(card['flagged_large_edge'])} flagged low_confidence_large_edge, "
-              f"{len(card['flagged_no_pick_extrapolation'])} suppressed as no_pick_extrapolation), "
-              f"{len(card['skipped'])} skipped, {rows_added} new picks persisted, "
-              f"{rows_retracted} stale pending pick(s) retracted. Saved to {out_path}")
+              f"{len(card['flagged_no_pick_extrapolation'])} suppressed as no_pick_extrapolation, "
+              f"still persisted with qualifies=0), {len(card['skipped'])} skipped, "
+              f"{rows_added} new picks persisted, {rows_updated} existing pending pick(s) "
+              f"updated to this run's numbers. Saved to {out_path}")
 
 
 if __name__ == "__main__":

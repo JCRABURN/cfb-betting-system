@@ -80,12 +80,17 @@ def get_source_health(conn, source, now=None):
 
 
 def build_season_ledger(conn, season):
-    """Record/ROI/CLV/hook count from every SETTLED live pick this season.
-    Returns None if nothing has been graded yet -- the caller renders the
+    """Record/ROI/CLV/hook count from every SETTLED, QUALIFYING live pick
+    this season. `qualifies = 1` excludes no_pick_extrapolation rows
+    (corrected 2026-09-08: those now get a persisted, graded `picks` row
+    too, so their real performance can be checked, but they were never a
+    real recommendation and must not count toward the headline ATS/ROI
+    numbers -- this filter is what keeps that true). Returns None if
+    nothing qualifying has been graded yet -- the caller renders the
     honest empty state for that, never a placeholder number."""
     rows = conn.execute(
         "SELECT result, unit_pl, clv, key_factors FROM picks "
-        "WHERE year = ? AND pick_type = 'live' AND status = 'settled'",
+        "WHERE year = ? AND pick_type = 'live' AND status = 'settled' AND qualifies = 1",
         (season,),
     ).fetchall()
     if not rows:

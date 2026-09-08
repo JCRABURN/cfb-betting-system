@@ -390,11 +390,35 @@ def _migrate_schema(conn):
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {col_type}")
 
 
+def _backfill_qualifies_column(conn):
+    """One-time data correction (2026-09-08), permanently idempotent so it's
+    safe to run on every init_db() call, not just once: `qualifies` was an
+    inert column (always hardcoded 0) until card_generator.py started using
+    it to mean "genuine recommendation vs. suppressed no_pick_extrapolation
+    no-pick" (see card_generator.persist_picks_to_db). Every `picks` row
+    written before that change has qualifies=0 with NO
+    "no_pick_extrapolation" in confidence_signals -- under the OLD code, a
+    no_pick_extrapolation game never got a row persisted at ALL, so any
+    pre-existing qualifies=0 row is, by construction, a real recommendation
+    mislabeled by the old blanket-0 default, not a genuine no-pick. A row
+    genuinely written under the NEW semantics as qualifies=0 always DOES
+    carry "no_pick_extrapolation" in confidence_signals, so this WHERE
+    clause can never touch it -- the discriminator is structural, not a
+    point-in-time cutoff, which is what makes running this on every startup
+    safe rather than a one-shot script that could be missed or re-run
+    wrongly."""
+    conn.execute(
+        "UPDATE picks SET qualifies = 1 WHERE pick_type = 'live' AND qualifies = 0 "
+        "AND (confidence_signals IS NULL OR confidence_signals NOT LIKE '%no_pick_extrapolation%')"
+    )
+
+
 def init_db():
     conn = get_connection()
     try:
         conn.executescript(SCHEMA)
         _migrate_schema(conn)
+        _backfill_qualifies_column(conn)
         conn.commit()
     finally:
         conn.close()
