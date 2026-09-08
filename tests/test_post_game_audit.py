@@ -206,6 +206,56 @@ def test_only_grades_pending_picks_for_the_requested_week(temp_db):
 
 
 # ---------------------------------------------------------------------------
+# find_weeks_with_pending_picks (added 2026-09-08: a Monday-night kickoff
+# finishes after that week's audit cron already ran, so its pick is still
+# pending once get_current_week() has rolled over to the next week --
+# main() needs to know which OTHER weeks still have work, not just trust
+# get_current_week())
+# ---------------------------------------------------------------------------
+
+def test_find_weeks_with_pending_picks(temp_db):
+    conn = temp_db.get_connection()
+    insert_game(conn, 1, 2026, 1, "A", "B")
+    insert_game(conn, 2, 2026, 2, "C", "D")
+    insert_game(conn, 3, 2026, 3, "E", "F")
+    insert_pick(conn, 1, 1, 2026, "A", "B", spread=-3.0, side="A", status="pending")
+    insert_pick(conn, 2, 2, 2026, "C", "D", spread=-3.0, side="C", status="settled")
+    insert_pick(conn, 3, 3, 2026, "E", "F", spread=-3.0, side="E", status="pending")
+    conn.commit()
+
+    weeks = pga.find_weeks_with_pending_picks(conn, 2026)
+    conn.close()
+
+    assert weeks == [1, 3]  # week 2's pick is settled, not pending -- excluded
+
+
+def test_find_weeks_with_pending_picks_ignores_other_seasons(temp_db):
+    conn = temp_db.get_connection()
+    insert_game(conn, 1, 2025, 1, "A", "B")
+    insert_game(conn, 2, 2026, 1, "C", "D")
+    insert_pick(conn, 1, 1, 2025, "A", "B", spread=-3.0, side="A", status="pending")
+    insert_pick(conn, 2, 1, 2026, "C", "D", spread=-3.0, side="C", status="pending")
+    conn.commit()
+
+    weeks = pga.find_weeks_with_pending_picks(conn, 2026)
+    conn.close()
+
+    assert weeks == [1]
+
+
+def test_find_weeks_with_pending_picks_empty_when_nothing_pending(temp_db):
+    conn = temp_db.get_connection()
+    insert_game(conn, 1, 2026, 1, "A", "B")
+    insert_pick(conn, 1, 1, 2026, "A", "B", spread=-3.0, side="A", status="settled")
+    conn.commit()
+
+    weeks = pga.find_weeks_with_pending_picks(conn, 2026)
+    conn.close()
+
+    assert weeks == []
+
+
+# ---------------------------------------------------------------------------
 # grade_contest_entries -- pool-pick performance by confidence rank
 # (added 2026-08-13)
 # ---------------------------------------------------------------------------

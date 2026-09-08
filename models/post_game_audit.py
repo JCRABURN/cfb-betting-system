@@ -116,6 +116,24 @@ def is_hook(spread, covered_margin):
     return has_half_point and abs(covered_margin) == 0.5
 
 
+def find_weeks_with_pending_picks(conn, season):
+    """Distinct weeks (ascending) that still have a pending live pick for
+    `season`. Exists because get_current_week() alone isn't a safe guide
+    for what to grade (found live 2026-09-08): a Monday-night kickoff
+    (e.g. FSU/SMU, 23:30 UTC) finishes AFTER the Monday 11:00 UTC audit
+    cron already ran for that week, so its pick is still pending when the
+    cron fires next -- by then get_current_week() has already rolled over
+    to the following week, and a pure "grade whatever week is current" run
+    would silently never come back for the straggler. main() unions this
+    with the current week rather than relying on either alone."""
+    rows = conn.execute(
+        "SELECT DISTINCT week FROM picks WHERE year = ? AND pick_type = 'live' AND status = 'pending' "
+        "ORDER BY week",
+        (season,),
+    ).fetchall()
+    return [r[0] for r in rows]
+
+
 def grade_pending_picks(conn, season, week):
     """Grades every pending pick for (season, week): result, CLV, hook
     flag. A pick whose game isn't final yet is left pending, not treated
@@ -252,17 +270,37 @@ def main():
     with db.log_run("post_game_audit") as run:
         conn = db.get_connection()
         try:
-            week, season = fetch_stats.get_current_week(conn=conn)
-            scores = fetch_final_scores(season, week, conn=conn)
-            scores_updated = persist_final_scores(conn, scores)
-            graded, hooks = grade_pending_picks(conn, season, week)
+            current_week, season = fetch_stats.get_current_week(conn=conn)
+            # Union with current week (not just weeks with pending picks):
+            # keeps logging/behavior identical to before this fix on the
+            # common case (nothing pending anywhere but the current week),
+            # and still fetches/persists current-week scores even before
+            # any of its picks have gone pending.
+            weeks = sorted(set(find_weeks_with_pending_picks(conn, season)) | {current_week})
+
+            scores_updated = 0
+            graded = 0
+            hooks = 0
+            per_week = []
+            for week in weeks:
+                scores = fetch_final_scores(season, week, conn=conn)
+                week_scores_updated = persist_final_scores(conn, scores)
+                week_graded, week_hooks = grade_pending_picks(conn, season, week)
+                scores_updated += week_scores_updated
+                graded += week_graded
+                hooks += week_hooks
+                per_week.append((week, week_scores_updated, week_graded, week_hooks))
             rank_report = grade_contest_entries(conn, season)
         finally:
             conn.close()
 
         run["rows_added"] = graded
-        print(f"Season {season} Week {week}: {scores_updated} game(s) scored, "
+        weeks_str = ", ".join(str(w) for w in weeks)
+        print(f"Season {season}, week(s) {weeks_str}: {scores_updated} game(s) scored, "
               f"{graded} pick(s) graded ({hooks} decided by a hook).")
+        if len(weeks) > 1:
+            for week, ws, wg, wh in per_week:
+                print(f"  Week {week}: {ws} scored, {wg} graded ({wh} hooks)")
 
         if rank_report["overall"]["n"]:
             print(f"\nContest pool performance by rank (season {season}, "
