@@ -1,0 +1,50 @@
+game_id,season,week,game_date,start_time,away_team,home_team,away_spread,home_spread,locked_total,favorite,favorite_line,underdog,source,locked_at,source_image,lock_status
+2026_W02_01,2026,2,2026-09-11,6:30 PM,Rutgers,Boston College,3.5,-3.5,54.5,Boston College,-3.5,Rutgers,SplashSports,2026-09-09 08:39 CDT,Screenshot 1,LOCKED
+2026_W02_02,2026,2,2026-09-11,7:00 PM,Missouri,Kansas,-5.5,5.5,50.5,Missouri,-5.5,Kansas,SplashSports,2026-09-09 08:39 CDT,Screenshot 1,LOCKED
+2026_W02_03,2026,2,2026-09-12,11:00 AM,Oklahoma,Michigan,-5.5,5.5,43.5,Oklahoma,-5.5,Michigan,SplashSports,2026-09-09 08:39 CDT,Screenshot 1,LOCKED
+2026_W02_04,2026,2,2026-09-12,11:00 AM,Old Dominion,Virginia Tech,19.5,-19.5,49.5,Virginia Tech,-19.5,Old Dominion,SplashSports,2026-09-09 08:39 CDT,Screenshot 1,LOCKED
+2026_W02_05,2026,2,2026-09-12,11:00 AM,Washington State,Kansas State,18.5,-18.5,48.5,Kansas State,-18.5,Washington State,SplashSports,2026-09-09 08:39 CDT,Screenshot 1,LOCKED
+2026_W02_06,2026,2,2026-09-12,11:00 AM,Oregon,Oklahoma State,-22.5,22.5,57.5,Oregon,-22.5,Oklahoma State,SplashSports,2026-09-09 08:39 CDT,Screenshot 1,LOCKED
+2026_W02_07,2026,2,2026-09-12,11:00 AM,Appalachian State,East Carolina,7.5,-7.5,56.5,East Carolina,-7.5,Appalachian State,SplashSports,2026-09-09 08:39 CDT,Screenshot 1,LOCKED
+2026_W02_08,2026,2,2026-09-12,11:00 AM,Arizona State,Texas A&M,14.5,-14.5,49.5,Texas A&M,-14.5,Arizona State,SplashSports,2026-09-09 08:39 CDT,Screenshot 1,LOCKED
+2026_W02_09,2026,2,2026-09-12,11:00 AM,Wake Forest,Purdue,-2.5,2.5,49.5,Wake Forest,-2.5,Purdue,SplashSports,2026-09-09 08:39 CDT,Screenshot 1,LOCKED
+2026_W02_10,2026,2,2026-09-12,11:00 AM,South Florida,Army,3.5,-3.5,46.5,Army,-3.5,South Florida,SplashSports,2026-09-09 08:39 CDT,Screenshot 1,LOCKED
+2026_W02_11,2026,2,2026-09-12,11:00 AM,Penn State,Temple,-23.5,23.5,49.5,Penn State,-23.5,Temple,SplashSports,2026-09-09 08:39 CDT,Screenshot 1,LOCKED
+2026_W02_12,2026,2,2026-09-12,11:45 AM,Western Kentucky,Georgia,40.5,-40.5,55.5,Georgia,-40.5,Western Kentucky,SplashSports,2026-09-09 08:39 CDT,Screenshot 2,LOCKED
+2026_W02_13,2026,2,2026-09-12,2:30 PM,Mississippi State,Minnesota,1.5,-1.5,55.5,Minnesota,-1.5,Mississippi State,SplashSports,2026-09-09 08:39 CDT,Screenshot 2,LOCKED
+2026_W02_14,2026,2,2026-09-12,2:30 PM,Maryland,UConn,-12.5,12.5,52.5,Maryland,-12.5,UConn,SplashSports,2026-09-09 08:39 CDT,Screenshot 2,LOCKED
+2026_W02_15,2026,2,2026-09-12,2:30 PM,Eastern Michigan,Michigan State,17.5,-17.5,48.5,Michigan State,-17.5,Eastern Michigan,SplashSports,2026-09-09 08:39 CDT,Screenshot 2,LOCKED
+2026_W02_16,2026,2,2026-09-12,2:30 PM,UCF,Pittsburgh,7.5,-7.5,57.5,Pittsburgh,-7.5,UCF,SplashSports,2026-09-09 08:39 CDT,Screenshot 2,LOCKED
+2026_W02_17,2026,2,2026-09-12,2:30 PM,Arizona,BYU,7.5,-7.5,48.5,BYU,-7.5,Arizona,SplashSports,2026-09-09 08:39 CDT,Screenshot 2,LOCKED
+2026_W02_18,2026,2,2026-09-12,2:30 PM,California,Syracuse,3.5,-3.5,56.5,Syracuse,-3.5,California,SplashSports,2026-09-09 08:39 CDT,Screenshot 2,LOCKED
+2026_W02_19,2026,2,2026-09-12,2:30 PM,Louisiana-Monroe,UAB,9.5,-9.5,55.5,UAB,-9.5,Louisiana-Monroe,SplashSports,2026-09-09 08:39 CDT,Screenshot 2,LOCKED
+2026_W02_20,2026,2,2026-09-12,2:30 PM,Rice,Notre Dame,43.5,-43.5,55.5,Notre Dame,-43.5,Rice,SplashSports,2026-09-09 08:39 CDT,Screenshot 2,LOCKED
+2026_W02_21,2026,2,2026-09-12,2:30 PM,Duke,Illinois,5.5,-5.5,51.5,Illinois,-5.5,Duke,SplashSports,2026-09-09 08:39 CDT,Screenshot 3,LOCKED
+2026_W02_22,2026,2,2026-09-12,2:30 PM,Alabama,Kentucky,-10.5,10.5,49.5,Alabama,-10.5,Kentucky,SplashSports,2026-09-09 08:39 CDT,Screenshot 3,LOCKED
+2026_W02_23,2026,2,2026-09-12,2:30 PM,Utah State,Washington,27.5,-27.5,55.5,Washington,-27.5,Utah State,SplashSports,2026-09-09 08:39 CDT,Screenshot 3,LOCKED
+2026_W02_24,2026,2,2026-09-12,2:30 PM,UTSA,Texas State,1.5,-1.5,66.5,Texas State,-1.5,UTSA,SplashSports,2026-09-09 08:39 CDT,Screenshot 3,LOCKED
+2026_W02_25,2026,2,2026-09-12,2:45 PM,UNLV,North Texas,-3.5,3.5,57.5,UNLV,-3.5,North Texas,SplashSports,2026-09-09 08:39 CDT,Screenshot 3,LOCKED
+2026_W02_26,2026,2,2026-09-12,3:15 PM,Delaware,Vanderbilt,20.5,-20.5,54.5,Vanderbilt,-20.5,Delaware,SplashSports,2026-09-09 08:39 CDT,Screenshot 3,LOCKED
+2026_W02_27,2026,2,2026-09-12,5:00 PM,Buffalo,Florida International,10.5,-10.5,47.5,Florida International,-10.5,Buffalo,SplashSports,2026-09-09 08:39 CDT,Screenshot 3,LOCKED
+2026_W02_28,2026,2,2026-09-12,5:00 PM,Memphis,Boise State,8.5,-8.5,54.5,Boise State,-8.5,Memphis,SplashSports,2026-09-09 08:39 CDT,Screenshot 3,LOCKED
+2026_W02_29,2026,2,2026-09-12,5:00 PM,Jacksonville State,Ohio,2.5,-2.5,50.5,Ohio,-2.5,Jacksonville State,SplashSports,2026-09-09 08:39 CDT,Screenshot 3,LOCKED
+2026_W02_30,2026,2,2026-09-12,6:00 PM,South Alabama,Tulane,9.5,-9.5,49.5,Tulane,-9.5,South Alabama,SplashSports,2026-09-09 08:39 CDT,Screenshot 3,LOCKED
+2026_W02_31,2026,2,2026-09-12,6:00 PM,Tulsa,Sam Houston,-14.5,14.5,51.5,Tulsa,-14.5,Sam Houston,SplashSports,2026-09-09 08:39 CDT,Screenshot 3,LOCKED
+2026_W02_32,2026,2,2026-09-12,6:00 PM,Middle Tennessee,Marshall,13.5,-13.5,57.5,Marshall,-13.5,Middle Tennessee,SplashSports,2026-09-09 08:39 CDT,Screenshot 3,LOCKED
+2026_W02_33,2026,2,2026-09-12,6:00 PM,Georgia State,Kennesaw State,8.5,-8.5,54.5,Kennesaw State,-8.5,Georgia State,SplashSports,2026-09-09 08:39 CDT,Screenshot 4,LOCKED
+2026_W02_34,2026,2,2026-09-12,6:00 PM,Tennessee,Georgia Tech,-12.5,12.5,55.5,Tennessee,-12.5,Georgia Tech,SplashSports,2026-09-09 08:39 CDT,Screenshot 4,LOCKED
+2026_W02_35,2026,2,2026-09-12,6:00 PM,Bowling Green,Nebraska,28.5,-28.5,51.5,Nebraska,-28.5,Bowling Green,SplashSports,2026-09-09 08:39 CDT,Screenshot 4,LOCKED
+2026_W02_36,2026,2,2026-09-12,6:15 PM,San Diego State,UCLA,12.5,-12.5,55.5,UCLA,-12.5,San Diego State,SplashSports,2026-09-09 08:39 CDT,Screenshot 4,LOCKED
+2026_W02_37,2026,2,2026-09-12,6:30 PM,Navy,Florida Atlantic,-4.5,4.5,59.5,Navy,-4.5,Florida Atlantic,SplashSports,2026-09-09 08:39 CDT,Screenshot 4,LOCKED
+2026_W02_38,2026,2,2026-09-12,6:30 PM,Georgia Southern,Clemson,20.5,-20.5,55.5,Clemson,-20.5,Georgia Southern,SplashSports,2026-09-09 08:39 CDT,Screenshot 4,LOCKED
+2026_W02_39,2026,2,2026-09-12,6:30 PM,Iowa State,Iowa,13.5,-13.5,39.5,Iowa,-13.5,Iowa State,SplashSports,2026-09-09 08:39 CDT,Screenshot 4,LOCKED
+2026_W02_40,2026,2,2026-09-12,6:30 PM,Texas Tech,Oregon State,-26.5,26.5,53.5,Texas Tech,-26.5,Oregon State,SplashSports,2026-09-09 08:39 CDT,Screenshot 4,LOCKED
+2026_W02_41,2026,2,2026-09-12,6:30 PM,Louisiana Tech,LSU,35.5,-35.5,56.5,LSU,-35.5,Louisiana Tech,SplashSports,2026-09-09 08:39 CDT,Screenshot 4,LOCKED
+2026_W02_42,2026,2,2026-09-12,6:30 PM,Ohio State,Texas,1.5,-1.5,48.5,Texas,-1.5,Ohio State,SplashSports,2026-09-09 08:39 CDT,Screenshot 5,LOCKED
+2026_W02_43,2026,2,2026-09-12,6:45 PM,Charlotte,Ole Miss,47.5,-47.5,61.5,Ole Miss,-47.5,Charlotte,SplashSports,2026-09-09 08:39 CDT,Screenshot 5,LOCKED
+2026_W02_44,2026,2,2026-09-12,6:45 PM,Southern Miss,Auburn,32.5,-32.5,56.5,Auburn,-32.5,Southern Miss,SplashSports,2026-09-09 08:39 CDT,Screenshot 5,LOCKED
+2026_W02_45,2026,2,2026-09-12,9:00 PM,North Dakota State,Air Force,-2.5,2.5,47.5,North Dakota State,-2.5,Air Force,SplashSports,2026-09-09 08:39 CDT,Screenshot 5,LOCKED
+2026_W02_46,2026,2,2026-09-12,9:15 PM,Arkansas,Utah,12.5,-12.5,55.5,Utah,-12.5,Arkansas,SplashSports,2026-09-09 08:39 CDT,Screenshot 5,LOCKED
+2026_W02_47,2026,2,2026-09-12,9:30 PM,Sacramento State,Fresno State,18.5,-18.5,45.5,Fresno State,-18.5,Sacramento State,SplashSports,2026-09-09 08:39 CDT,Screenshot 5,LOCKED
+2026_W02_48,2026,2,2026-09-12,10:00 PM,Louisiana,USC,30.5,-30.5,60.5,USC,-30.5,Louisiana,SplashSports,2026-09-09 08:39 CDT,Screenshot 5,LOCKED
+2026_W02_49,2026,2,2026-09-12,11:00 PM,New Mexico State,Hawaii,8.5,-8.5,50.5,Hawaii,-8.5,New Mexico State,SplashSports,2026-09-09 08:39 CDT,Screenshot 5,LOCKED

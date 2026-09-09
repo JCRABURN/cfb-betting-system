@@ -1,0 +1,50 @@
+csv_id,away_team,home_team,game_id,pool_home_spread,pool_total,model_home_spread,model_pick,model_edge,recommendation,confidence_flag
+2026_W02_01,Rutgers,Boston College,401858214,-3.5,54.5,-3.3,Rutgers,1.1,recommended,standard
+2026_W02_02,Missouri,Kansas,401856678,5.5,50.5,5.5,Kansas,11.41,not_recommended_large_edge,low_confidence_large_edge
+2026_W02_03,Oklahoma,Michigan,401856679,5.5,43.5,5.7,Oklahoma,9.53,recommended,standard
+2026_W02_04,Old Dominion,Virginia Tech,401858221,-19.5,49.5,-19.3,Virginia Tech,24.69,not_recommended_large_edge,low_confidence_large_edge
+2026_W02_05,Washington State,Kansas State,401856781,-18.5,48.5,-18.5,Kansas State,17.49,not_recommended_large_edge,low_confidence_large_edge
+2026_W02_06,Oregon,Oklahoma State,401856782,22.5,57.5,22.5,Oklahoma State,11.51,not_recommended_large_edge,low_confidence_large_edge
+2026_W02_07,App State,East Carolina,401864571,-7.5,56.5,-7.5,App State,48.07,not_recommended_large_edge,low_confidence_large_edge
+2026_W02_08,Arizona State,Texas A&M,401856683,-14.5,49.5,-14.3,Arizona State,23.57,not_recommended_large_edge,low_confidence_large_edge
+2026_W02_09,Wake Forest,Purdue,401858224,2.5,49.5,2.8,Purdue,3.22,recommended,standard
+2026_W02_10,South Florida,Army,401862702,-3.5,46.5,-3.5,Army,36.98,not_recommended_large_edge,low_confidence_large_edge
+2026_W02_11,Penn State,Temple,401858442,23.5,49.5,23.7,Temple,10.69,not_recommended_large_edge,low_confidence_large_edge
+2026_W02_12,Western Kentucky,Georgia,401856673,-40.5,55.5,-40.5,Georgia,15.59,not_recommended_large_edge,low_confidence_large_edge
+2026_W02_13,Mississippi State,Minnesota,401856677,-1.5,55.5,0.7,Minnesota,8.98,recommended,standard
+2026_W02_14,Maryland,UConn,401858444,12.5,52.5,12.5,UConn,17.43,not_recommended_large_edge,low_confidence_large_edge
+2026_W02_15,Eastern Michigan,Michigan State,401858440,-17.5,48.5,-17.3,Eastern Michigan,21.9,not_recommended_large_edge,low_confidence_large_edge
+2026_W02_16,UCF,Pittsburgh,401856790,-7.5,57.5,-6.8,UCF,14.15,not_recommended_large_edge,low_confidence_large_edge
+2026_W02_17,Arizona,BYU,401856810,-7.5,48.5,-7.5,BYU,16.7,not_recommended_large_edge,low_confidence_large_edge
+2026_W02_18,California,Syracuse,401858216,-3.5,56.5,-3.3,Syracuse,38.13,not_recommended_large_edge,low_confidence_large_edge
+2026_W02_19,UL Monroe,UAB,401862708,-9.5,55.5,-9.8,UAB,7.45,recommended,standard
+2026_W02_20,Rice,Notre Dame,401859184,-43.5,55.5,-44.2,Rice,41.47,not_recommended_large_edge,low_confidence_large_edge
+2026_W02_21,Duke,Illinois,401858217,-5.5,51.5,-5.8,Illinois,14.54,not_recommended_large_edge,low_confidence_large_edge
+2026_W02_22,Alabama,Kentucky,401856674,10.5,49.5,10.5,Kentucky,10.5,not_recommended_large_edge,low_confidence_large_edge
+2026_W02_23,Utah State,Washington,401858446,-27.5,55.5,-26.8,Utah State,21.26,not_recommended_large_edge,low_confidence_large_edge
+2026_W02_24,UTSA,Texas State,401860884,-1.5,66.5,-1.5,UTSA,27.85,not_recommended_large_edge,low_confidence_large_edge
+2026_W02_25,UNLV,North Texas,401862705,3.5,57.5,3.5,UNLV,8.1,recommended,standard
+2026_W02_26,Delaware,Vanderbilt,401856684,-20.5,54.5,-20.5,Delaware,35.22,not_recommended_large_edge,low_confidence_large_edge
+2026_W02_27,Buffalo,Florida International,401866414,-10.5,47.5,-10.5,Buffalo,7.69,recommended,standard
+2026_W02_28,Memphis,Boise State,401860881,-8.5,54.5,-8.5,Memphis,20.59,not_recommended_large_edge,low_confidence_large_edge
+2026_W02_29,Jacksonville State,Ohio,401866418,-2.5,50.5,-2.8,Jacksonville State,11.44,not_recommended_large_edge,low_confidence_large_edge
+2026_W02_30,South Alabama,Tulane,401864575,-9.5,49.5,-9.5,South Alabama,2.51,recommended,standard
+2026_W02_31,Tulsa,Sam Houston,401862707,14.5,51.5,13.7,Sam Houston,8.87,recommended,standard
+2026_W02_32,Middle Tennessee,Marshall,401871045,-13.5,57.5,-13.5,Middle Tennessee,45.99,not_recommended_large_edge,low_confidence_large_edge
+2026_W02_33,Georgia State,Kennesaw State,401869955,-8.5,54.5,-9.0,Georgia State,6.39,recommended,standard
+2026_W02_34,Tennessee,Georgia Tech,401856681,12.5,55.5,12.3,Tennessee,8.91,recommended,standard
+2026_W02_35,Bowling Green,Nebraska,401858441,-28.5,51.5,-28.7,Bowling Green,7.46,recommended,standard
+2026_W02_36,San Diego State,UCLA,401858443,-12.5,55.5,-12.0,San Diego State,7.89,recommended,standard
+2026_W02_37,Navy,Florida Atlantic,401862703,4.5,59.5,4.5,Navy,23.94,not_recommended_large_edge,low_confidence_large_edge
+2026_W02_38,Georgia Southern,Clemson,401858219,-20.5,55.5,-20.5,Georgia Southern,72.02,not_recommended_large_edge,low_confidence_large_edge
+2026_W02_39,Iowa State,Iowa,401856788,-13.5,39.5,-13.8,Iowa,1.24,recommended,standard
+2026_W02_40,Texas Tech,Oregon State,401856783,26.5,53.5,26.5,Oregon State,12.52,not_recommended_large_edge,low_confidence_large_edge
+2026_W02_41,Louisiana Tech,LSU,401867796,-35.5,56.5,-35.5,Louisiana Tech,42.04,not_recommended_large_edge,low_confidence_large_edge
+2026_W02_42,Ohio State,Texas,401856682,-1.5,48.5,-1.7,Ohio State,17.54,not_recommended_large_edge,low_confidence_large_edge
+2026_W02_43,Charlotte,Ole Miss,401856676,-47.5,61.5,-47.5,Charlotte,43.75,not_recommended_large_edge,low_confidence_large_edge
+2026_W02_44,Southern Miss,Auburn,401856671,-32.5,56.5,-33.0,Southern Miss,54.71,not_recommended_large_edge,low_confidence_large_edge
+2026_W02_45,North Dakota State,Air Force,401864502,2.5,47.5,,,,no_live_line,no_line
+2026_W02_46,Arkansas,Utah,401856670,-12.5,55.5,-12.3,Arkansas,7.12,recommended,standard
+2026_W02_47,Sacramento State,Fresno State,401860883,-18.5,45.5,,,,no_live_line,no_line
+2026_W02_48,Louisiana,USC,401858445,-30.5,60.5,-30.5,Louisiana,22.88,not_recommended_large_edge,low_confidence_large_edge
+2026_W02_49,New Mexico State,Hawai'i,401864578,-8.5,50.5,-8.0,New Mexico State,14.42,not_recommended_large_edge,low_confidence_large_edge

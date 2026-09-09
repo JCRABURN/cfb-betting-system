@@ -256,6 +256,66 @@ def test_find_weeks_with_pending_picks_empty_when_nothing_pending(temp_db):
 
 
 # ---------------------------------------------------------------------------
+# refresh_point_in_time_stats_if_week_complete (added 2026-09-09: found
+# live that Week 2's card came back 0/49 lined games because nothing had
+# ever fetched Week 1's point-in-time stats for the live 2026 season --
+# backfill_point_in_time_stats.py had no automation caller at all)
+# ---------------------------------------------------------------------------
+
+def test_refresh_point_in_time_stats_skips_when_a_pick_is_still_pending(temp_db, monkeypatch):
+    conn = temp_db.get_connection()
+    insert_game(conn, 1, 2026, 1, "A", "B")
+    insert_pick(conn, 1, 1, 2026, "A", "B", spread=-3.0, side="A", status="pending")
+    conn.commit()
+
+    called = []
+    monkeypatch.setattr(pga.pit, "fetch_point_in_time_stats", lambda year, week: called.append((year, week)))
+
+    result = pga.refresh_point_in_time_stats_if_week_complete(conn, 2026, 1)
+    conn.close()
+
+    assert result is None
+    assert called == []  # never even attempted the fetch -- week isn't done yet
+
+
+def test_refresh_point_in_time_stats_runs_once_week_is_fully_graded(temp_db, monkeypatch):
+    conn = temp_db.get_connection()
+    insert_game(conn, 1, 2026, 1, "A", "B", home_pts=30, away_pts=10, completed=1)
+    insert_pick(conn, 1, 1, 2026, "A", "B", spread=-3.0, side="A", status="settled")
+    conn.commit()
+
+    monkeypatch.setattr(
+        pga.pit, "fetch_point_in_time_stats",
+        lambda year, week: [{"team": "A", "offense": {"ppa": 0.2, "successRate": 0.5},
+                              "defense": {"ppa": -0.1, "successRate": 0.4, "havoc": {"total": 0.15}}}],
+    )
+
+    result = pga.refresh_point_in_time_stats_if_week_complete(conn, 2026, 1)
+
+    row = conn.execute(
+        "SELECT offense_epa_play FROM team_game_stats WHERE season=2026 AND week=1 "
+        "AND team='A' AND source='cfbd_point_in_time'"
+    ).fetchone()
+    conn.close()
+
+    assert result == (1, "ok")
+    assert row == (0.2,)
+
+
+def test_refresh_point_in_time_stats_no_pending_at_all_still_runs(temp_db, monkeypatch):
+    """A week with zero picks ever recorded (e.g. nothing lined that week)
+    is not the same as "still in progress" -- it should still get its
+    point-in-time snapshot refreshed, not be mistaken for incomplete."""
+    conn = temp_db.get_connection()
+    monkeypatch.setattr(pga.pit, "fetch_point_in_time_stats", lambda year, week: [])
+
+    result = pga.refresh_point_in_time_stats_if_week_complete(conn, 2026, 1)
+    conn.close()
+
+    assert result == (0, "empty")
+
+
+# ---------------------------------------------------------------------------
 # grade_contest_entries -- pool-pick performance by confidence rank
 # (added 2026-08-13)
 # ---------------------------------------------------------------------------

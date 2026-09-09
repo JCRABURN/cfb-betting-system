@@ -41,6 +41,13 @@ recorded in contest_entries.rank at pick time (see pool_view.py). The
 question this answers: does a higher self-rated confidence rank actually
 predict a better outcome over a season, or is it noise -- rather than
 that being a gut impression revisited from memory.
+
+Also refreshes point-in-time team stats (refresh_point_in_time_stats_if_
+week_complete(), added 2026-09-09) for any week that just finished grading
+completely -- see that function's docstring for why this lives here: it's
+the same "a week just truly finished" moment the audit itself needs, and
+backfill_point_in_time_stats.py had no other live-automation caller at
+all before this.
 """
 
 import os
@@ -54,6 +61,7 @@ sys.path.insert(0, os.path.join(_ROOT, "data"))
 import db
 import fetch_stats
 import backtest_harness as bh
+import backfill_point_in_time_stats as pit
 from line_utils import get_latest_line
 
 CFBD_BASE = fetch_stats.CFBD_BASE
@@ -132,6 +140,35 @@ def find_weeks_with_pending_picks(conn, season):
         (season,),
     ).fetchall()
     return [r[0] for r in rows]
+
+
+def refresh_point_in_time_stats_if_week_complete(conn, season, week):
+    """Refresh point-in-time team stats for `week` the moment it's fully
+    graded (2026-09-09) -- card_generator.py's real in-season predictions
+    for week+1 depend on this (get_team_stats_as_of reads
+    source='cfbd_point_in_time' rows), and backfill_point_in_time_stats.py
+    was previously a manual-only script never wired into live automation:
+    found live when Week 2's card came back 0/49 lined games, 100%
+    missing_pregame_stats, because nothing had ever fetched Week 1's
+    point-in-time snapshot for the live season.
+
+    Gated on zero pending live picks left for `week` -- calling
+    backfill_week() before every game in the week has finished would lock
+    in an incomplete "through week N" snapshot, since it's
+    idempotent-by-design (skips an already-ingested week even if it was
+    written incomplete, short of --force) and never re-checked
+    automatically afterward.
+
+    Returns None if `week` still has a pending pick (not run), else
+    backfill_week()'s own (rows_added, status)."""
+    still_pending = conn.execute(
+        "SELECT COUNT(*) FROM picks WHERE year = ? AND week = ? AND pick_type = 'live' "
+        "AND status = 'pending'",
+        (season, week),
+    ).fetchone()[0]
+    if still_pending > 0:
+        return None
+    return pit.backfill_week(conn, season, week)
 
 
 def grade_pending_picks(conn, season, week):
@@ -282,6 +319,7 @@ def main():
             graded = 0
             hooks = 0
             per_week = []
+            pit_weeks_done = []
             for week in weeks:
                 scores = fetch_final_scores(season, week, conn=conn)
                 week_scores_updated = persist_final_scores(conn, scores)
@@ -290,6 +328,11 @@ def main():
                 graded += week_graded
                 hooks += week_hooks
                 per_week.append((week, week_scores_updated, week_graded, week_hooks))
+
+                pit_result = refresh_point_in_time_stats_if_week_complete(conn, season, week)
+                if pit_result is not None:
+                    pit_weeks_done.append((week, *pit_result))
+
             rank_report = grade_contest_entries(conn, season)
         finally:
             conn.close()
@@ -301,6 +344,8 @@ def main():
         if len(weeks) > 1:
             for week, ws, wg, wh in per_week:
                 print(f"  Week {week}: {ws} scored, {wg} graded ({wh} hooks)")
+        for week, rows_added, status in pit_weeks_done:
+            print(f"Point-in-time stats through week {week}: {status} ({rows_added} team rows)")
 
         if rank_report["overall"]["n"]:
             print(f"\nContest pool performance by rank (season {season}, "
