@@ -1,0 +1,34 @@
+name: Watchdog
+
+# Self-healing for the scheduled pipeline (ARCHITECTURE.md §30). Runs every
+# 3 hours so a late or dropped Monday audit cron gets dispatched manually
+# (after a 10h grace window), and a failed GitHub Pages deploy gets re-run.
+# Does nothing when everything is healthy.
+on:
+  schedule:
+    - cron: '17 */3 * * *'
+  workflow_dispatch:
+
+permissions:
+  actions: write   # dispatch the audit workflow, re-run a failed Pages deploy
+  contents: read
+
+jobs:
+  watchdog:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Check audit cadence and Pages deploy
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python models/watchdog.py

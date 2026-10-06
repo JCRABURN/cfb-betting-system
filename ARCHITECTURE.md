@@ -991,3 +991,19 @@ Ingesting the user's real Week 2 2026 SplashSports slate (49 games, plain CSV th
 **Known residual limitation, recorded not fixed**: the "zero pending picks" gate is a good proxy for "the week is done," not a mathematical guarantee — a week with games CFBD itself hasn't finalized yet, but that also happen not to have a lined `picks` row (e.g. `no_line`/`missing_pregame_stats` skips), wouldn't block the gate. Low risk in practice (the vast majority of a week's real games do get a `picks` row), but worth knowing if a future week's point-in-time snapshot looks off — the fix is `--force` re-running that one week, not distrusting the mechanism generally.
 
 Regression tests added in `test_post_game_audit.py` (gate blocks on a pending pick; runs once fully graded; runs even for a week with zero picks ever recorded, which is not the same as "incomplete"). Full suite green (350 tests).
+
+## 30. Watchdog: self-healing for late crons and silently-failed Pages deploys (2026-10-06)
+
+**What broke, observed live, not hypothetical.** The Monday Post-Game Audit's GitHub cron (target 11:00 UTC) has drifted later every week since early September: +0.8h in August, +5.3h on Sep 7, +8.5h on Oct 5. Separately, the auto-generated GitHub Pages deployment for the Oct 5 commit failed (`deploy` cancelled), and nothing re-triggered it, so the public site stayed on Oct 3's build while the repo was current. From the outside, "Monday audit didn't happen." It had: the audit graded all 55 pending Week 5 picks and committed correctly.
+
+**Fix: `models/watchdog.py` + `.github/workflows/watchdog.yml`.** Runs every 3 hours and does two read-then-act checks:
+1. **Audit cadence.** If no successful Post-Game Audit has run since the most recent Monday 11:00 UTC slot, and 10 hours have passed since that slot (margin over the worst observed 8.5h drift), it dispatches the audit via `workflow_dispatch`. It never dispatches while a run is already queued or in progress.
+2. **Pages.** If the most recent `pages-build-deployment` run failed or was cancelled, it re-runs that run. An older failure is ignored once a newer success exists; an in-progress deploy is left alone.
+
+**Why this is safe to run redundantly.** The audit is idempotent: it grades only pending picks and skips weeks whose point-in-time stats are already ingested. A manual dispatch racing a late cron produces a no-op second run, not double-grading.
+
+**Why not just move the cron earlier.** The drift is GitHub's scheduler being late, not our schedule being wrong. Changing the target time would only move the failure, so the watchdog is the actual fix. Adding a second, later cron was considered and rejected: it adds a second run that still depends on the same scheduler.
+
+**Decision logic is pure and tested** (`tests/test_watchdog.py`, 14 tests covering slot computation, grace window, already-succeeded, already-active, and the Pages rerun rules). The workflow needs `actions: write`; it uses only the built-in `GITHUB_TOKEN`, no new secret. Without a token, `python models/watchdog.py` runs as a read-only dry run against the public API.
+
+**Still open, recorded not fixed.** The point-in-time refresh (§29) still doesn't write an `ingestion_runs` row, so its weekly success isn't visible in the logs. The watchdog doesn't cover this.
