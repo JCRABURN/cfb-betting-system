@@ -1030,3 +1030,63 @@ What is left in place, deliberately: `data/nfl_*.py` ingestion scripts, the 15 c
 - Games already kicked off at ingest time (Tue Oct 13) are flagged `recommended_but_already_started` in the model-read CSV and excluded from the top 5, since a recommendation after kickoff isn't one.
 - Not ingested into `contest_entries`: the file carries no picks (its name says so), and `picked_side` is NOT NULL. Totals are present in the sheet and stored in the CSV (`pool_total`) but still not a modeled/first-class market (`MARKETS = "spreads"`).
 - The 3 Week 1 demo rows in `contest_entries` are still there; unchanged.
+
+## 32. Totals into the market read; two lanes (frozen pool vs. live learning); the in-play contamination bug (2026-10-14)
+
+Step 1 of the totals plan (market read only; no totals model yet), plus a data-integrity bug found while building it that mattered more than the feature.
+
+### The two lanes, stated explicitly
+
+The pool and the learning record have *opposite* relationships to the market, and conflating them was the main design risk:
+
+| | Pool lane | Learning lane |
+|---|---|---|
+| Table | `contest_entries` | `picks` |
+| Numbers | **Frozen** at the pool's Tuesday-noon line lock; immutable (audited `correct_contest_entry()` only) | **Follow the market** until kickoff, then freeze |
+| Compared to | The live market (drift) | Graded against the line it followed; CLV measured from the first line it was made at |
+| Why | The pool's printed number *is* the bet; picks are submitted after the freeze | A model read should reflect the best available pre-game number |
+
+Pool mechanics recorded here (stated by the user 2026-10-14): lines freeze Tuesday noon; picks are submitted after the freeze; the top 5 are rank-weighted, 5 = highest confidence, 15 points/week total. The ranker therefore emits `suggested_points` (5 for the strongest board position down to 1). The capturable edge is the move from Tuesday noon to the pick time, which is why picking late matters.
+
+### Found and fixed: in-play prices were being stored as `current` lines
+
+Investigating "why does the learning record look stale" surfaced a worse problem. The Odds API's `/odds` endpoint returns games already in progress with live prices, and `persist_lines_to_db()` stored them as ordinary `current` rows. Stanford @ Wake Forest read -12.5 -> -13.5 -> **-33.5** (an in-game blowout line); Memphis @ Charlotte +20.5 -> **+49.5**.
+
+Impact, measured on a copy of production before touching anything:
+- 268 stored rows (68 games, 31 archived pulls) were in-play prices.
+- 17% of graded picks had CLV computed against one. The headline **average CLV of +0.30 was an artifact**: corrected it is **+0.03** (mean |CLV| 1.71 -> 0.58, worst case 29.5 -> 5.7). The earlier note that CLV was "encouraging" should be disregarded; there is no evidence of beating the closing line.
+- ATS record and ROI were **not** affected (they grade the stored pick line, not the latest line): 150-140-1, -1.3% before and after.
+- The dashboard's "Market Movement" showed fake 20-30 point moves.
+
+Fixes, belt and suspenders because each layer fails differently:
+1. **Write side (primary):** skip any game whose Odds API `commence_time` is at or before the pull (`is_in_play`). Uses the feed's own kickoff, which is authoritative at pull time.
+2. **Read side (backstop):** `line_utils.get_latest_line()` / `get_latest_total()` exclude `current` rows fetched at or after the game's `start_date`. Only `current` is filtered: backfilled `closing`/`opening` rows carry the backfill run's timestamp and are not in-play.
+3. **Why both:** the read-side check depends on our CFBD `start_date`, refreshed only on Tuesdays. The Charlotte game's stored kickoff was 19:30 UTC; the Odds API reported 15:02. A schedule change after Tuesday defeats the read-side filter, not the write-side one.
+4. **History repair:** `data/repair_in_play_lines.py` identifies in-play rows *exactly* from the archived raw payloads (each event's own `commence_time` vs. the pull time) and **relabels** them `current` -> `in_play`. Append-only history is preserved; nothing deleted; idempotent.
+5. **CLV self-heal:** `post_game_audit.recompute_settled_clv()` runs every audit (CLV is a pure function of stored lines + the pick's first line), so a future correction of this kind needs no manual step. Only `clv` is ever modified, never result/status/P&L.
+
+### Learning lane now follows the market
+
+Previously only Tuesday's report re-ran the card, so by Saturday up to 65% of a week's tracked picks were stale (week 5: 36 of 55 differed from the latest line by >= 0.5 pt, mean 3.35 pt). Now:
+- `midweek_line_pull.yml` re-runs `card_generator.py` after each pull (non-fatal step).
+- `persist_picks_to_db()` UPDATEs pending picks only while `start_date` is in the future, and freezes them at kickoff.
+- The pick's **first-seen line** is stored in `picks.line_movement` (`{"first_spread": ...}`, a column that was always NULL) and is the CLV baseline. Without this, a pick that follows the market would show CLV ~ 0 by construction. Pre-existing rows are backfilled on their first update from their frozen `consensus_spread`.
+
+### Totals (market read only)
+
+- `fetch_odds.MARKETS = "spreads,totals"` (2 credits/pull; ~26/month at 3 pulls/week against 500 free). Totals are parsed by a separate pure `parse_totals()` so a malformed totals block cannot break the spread path; a spread-only payload still persists (tested). Total-only books get a row with `home_spread` NULL, which every spread reader already excludes. `PARSER_VERSION` -> `fetch_odds.v2`.
+- `gambling_view.build_totals_view()`: first-seen -> latest pre-kickoff total, same book. **"First seen", not "opener":** collection began 2026-10-14, so for games already in-week the baseline is the first snapshot we have. The view labels it so.
+- `contest_entries` rebuilt (SQLite cannot drop NOT NULL / change UNIQUE in place): `market_type` ('spread'|'total'), nullable `locked_home_spread`, new `locked_total`, uniqueness now includes `market_type` so one game can carry a spread and a total entry. `contest_entry_corrections` rebuilt to match. Rows copied with ids preserved; rehearsed against a copy of production (3 rows intact, FK check clean, idempotent) and covered by a test that builds the *old* schema by hand.
+- CSV: optional `market_type` and `locked_total` columns (old CSVs still load). A total row sets `picked_side` to `over`/`under`; malformed rows raise instead of guessing.
+- Drift: total drift = live total - locked total (positive = toward Over). Grading uses the **frozen** `locked_total`, never a later line; exactly on the number is a push.
+- Ranking: spread and total drift are put on one scale by dividing by each market's measured outcome noise (1,482 games 2021-2025: sigma 15.41 spread, 15.63 total), so a heavily-moved total can outrank a flat spread. A total entry never borrows its game's *spread* edge or card confidence flag.
+
+### What this deliberately is not
+
+No totals **model** and no totals-based recommendation yet. Totals appear only as market movement and as pool drift/grading. The model-edge side is Phase 2 and must clear a pre-registered walk-forward bar on 2022-2025 openers (~3,700 games) before it may rank anything. Known gaps for that phase: no pace/tempo feature (likely available in a CFBD call already made and discarded; unverified) and an empty `weather` table.
+
+### Honest limits
+
+- The totals feed is **unverified against a live Odds API response from this machine** (the host is blocked locally); the first real test is the next Actions pull. The parser is covered by fixtures, and the spread path is isolated from it.
+- The market-move signal tested on 2021-2025 (betting the direction a line moved, graded against the stale opening number: 56-61% on moves >= 2 pts) is real, but pool lines are rarely stale: only 0-4 games/week differ from our market by >= 2 pts. It can fill a slot or two, not a top 5.
+- Pulls happen Tue/Thu/Sat, so "follows the market" means three refreshes a week, not continuous.

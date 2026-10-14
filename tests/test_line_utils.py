@@ -75,7 +75,7 @@ def test_prefer_book_returns_newest_snapshot_not_oldest(temp_db):
     surfaced -- in practice the OLDEST (first-inserted) row, exactly
     backwards for a function named get_latest_line."""
     conn = temp_db.get_connection()
-    insert_game(conn, 1, 2023, 5, "X", "Y")
+    insert_game(conn, 1, 2023, 5, "X", "Y", start_date="2026-09-01T00:00:00.000Z")
     insert_line(conn, 1, 2023, 5, "X", "Y", home_spread=-7.0, line_type="current", book="draftkings",
                 fetched_at="2026-08-03T21:05:04.115305")
     insert_line(conn, 1, 2023, 5, "X", "Y", home_spread=-7.0, line_type="current", book="draftkings",
@@ -96,7 +96,7 @@ def test_prefer_book_returns_newest_snapshot_not_oldest(temp_db):
 def test_consensus_branch_returns_newest_snapshot_not_oldest(temp_db):
     """Same append-only defect, no prefer_book -- consensus branch."""
     conn = temp_db.get_connection()
-    insert_game(conn, 1, 2023, 5, "X", "Y")
+    insert_game(conn, 1, 2023, 5, "X", "Y", start_date="2026-09-01T00:00:00.000Z")
     insert_line(conn, 1, 2023, 5, "X", "Y", home_spread=-3.0, line_type="current", book="consensus",
                 fetched_at="2026-08-03T21:05:04.115305")
     insert_line(conn, 1, 2023, 5, "X", "Y", home_spread=-4.5, line_type="current", book="consensus",
@@ -119,7 +119,7 @@ def test_book_agnostic_fallback_returns_newest_snapshot_not_alphabetical_book(te
     but is the OLDER snapshot -- the old code would have wrongly returned
     it."""
     conn = temp_db.get_connection()
-    insert_game(conn, 1, 2023, 5, "X", "Y")
+    insert_game(conn, 1, 2023, 5, "X", "Y", start_date="2026-09-01T00:00:00.000Z")
     insert_line(conn, 1, 2023, 5, "X", "Y", home_spread=-3.0, line_type="current", book="betmgm",
                 fetched_at="2026-08-03T21:05:04.115305")
     insert_line(conn, 1, 2023, 5, "X", "Y", home_spread=-3.5, line_type="current", book="fanduel",

@@ -143,6 +143,49 @@ def find_weeks_with_pending_picks(conn, season):
     return [r[0] for r in rows]
 
 
+def pick_baseline_spread(line_movement, consensus_spread):
+    """The line a pick's CLV is measured FROM. The learning lane's
+    consensus_spread now follows the market until kickoff (card_generator.
+    persist_picks_to_db), so measuring CLV from it would be ~0 by
+    construction. The first line the pick was ever made at is stored in
+    picks.line_movement as {"first_spread": ...}; rows that predate that
+    have NULL there and their (frozen) consensus_spread IS the first line."""
+    if line_movement:
+        try:
+            first = json.loads(line_movement).get("first_spread")
+            if first is not None:
+                return first
+        except (ValueError, AttributeError):
+            pass
+    return consensus_spread
+
+
+def recompute_settled_clv(conn, season):
+    """Self-healing CLV correction (2026-10-14). 49/291 settled picks had
+    CLV computed against a post-kickoff in-play snapshot before
+    line_utils.get_latest_line() learned to exclude those. CLV is a pure
+    function of betting_lines + the pick's first line, so recomputing is
+    idempotent and safe to run every audit. Only `clv` changes -- never
+    result, unit_pl, or status. Returns the number of rows changed."""
+    rows = conn.execute(
+        "SELECT id, game_id, home_team, consensus_spread, line_movement, recommended_side, clv "
+        "FROM picks WHERE year = ? AND pick_type = 'live' AND status = 'settled'",
+        (season,),
+    ).fetchall()
+    changed = 0
+    for pick_id, game_id, home_team, spread, line_movement, side, old_clv in rows:
+        latest = get_latest_line(conn, game_id)
+        baseline = pick_baseline_spread(line_movement, spread)
+        if latest is None or latest["home_spread"] is None or baseline is None:
+            continue
+        new_clv = bh.calculate_clv(side, home_team, baseline, latest["home_spread"])
+        if old_clv is None or abs(new_clv - old_clv) > 1e-9:
+            conn.execute("UPDATE picks SET clv = ? WHERE id = ?", (new_clv, pick_id))
+            changed += 1
+    conn.commit()
+    return changed
+
+
 def refresh_point_in_time_stats_if_week_complete(conn, season, week):
     """Refresh point-in-time team stats for `week` the moment it's fully
     graded (2026-09-09) -- card_generator.py's real in-season predictions
@@ -199,14 +242,14 @@ def grade_pending_picks(conn, season, week):
     as an error -- an in-progress or postponed game simply has no final
     score yet."""
     pending = conn.execute(
-        "SELECT id, game_id, home_team, away_team, consensus_spread, recommended_side "
+        "SELECT id, game_id, home_team, away_team, consensus_spread, recommended_side, line_movement "
         "FROM picks WHERE week = ? AND year = ? AND pick_type = 'live' AND status = 'pending'",
         (week, season),
     ).fetchall()
 
     graded = 0
     hooks = 0
-    for pick_id, game_id, home_team, away_team, spread, side in pending:
+    for pick_id, game_id, home_team, away_team, spread, side, line_movement in pending:
         final = bh.get_final_score(conn, game_id)
         if final is None:
             continue
@@ -224,7 +267,11 @@ def grade_pending_picks(conn, season, week):
         hook = is_hook(spread, covered_margin)
 
         latest = get_latest_line(conn, game_id)
-        clv = bh.calculate_clv(side, home_team, spread, latest["home_spread"]) if latest else None
+        clv = (
+            bh.calculate_clv(side, home_team, pick_baseline_spread(line_movement, spread),
+                             latest["home_spread"])
+            if latest and latest["home_spread"] is not None else None
+        )
 
         conn.execute(
             "UPDATE picks SET result = ?, clv = ?, unit_pl = ?, status = 'settled', "
@@ -235,6 +282,17 @@ def grade_pending_picks(conn, season, week):
         hooks += int(hook)
     conn.commit()
     return graded, hooks
+
+
+def grade_total(picked_side, locked_total, total_points):
+    """'win' | 'loss' | 'push' for an over/under pool entry, against the
+    FROZEN locked_total (never a later line -- the pool's number at lock is
+    the bet). Exactly on the number is a push, same as a whole-number
+    spread."""
+    if total_points == locked_total:
+        return "push"
+    went_over = total_points > locked_total
+    return "win" if went_over == (picked_side == "over") else "loss"
 
 
 def grade_contest_entries(conn, season, contest=None):
@@ -267,7 +325,8 @@ def grade_contest_entries(conn, season, contest=None):
     an error, just nothing to grade yet."""
     query = (
         "SELECT ce.picked_side, ce.normalized_home_team, ce.normalized_away_team, "
-        "ce.locked_home_spread, ce.rank, g.home_points, g.away_points "
+        "ce.locked_home_spread, ce.rank, g.home_points, g.away_points, "
+        "ce.market_type, ce.locked_total "
         "FROM contest_entries ce "
         "JOIN games g ON g.game_id = ce.game_id "
         "WHERE ce.season = ? AND g.completed = 1"
@@ -284,12 +343,17 @@ def grade_contest_entries(conn, season, contest=None):
 
     overall = _new_bucket()
     by_rank = {}
-    for picked_side, home, away, spread, rank, home_pts, away_pts in rows:
+    by_market = {}
+    for picked_side, home, away, spread, rank, home_pts, away_pts, market_type, locked_total in rows:
         if home_pts is None or away_pts is None:
             continue
-        result = bh.grade_ats(picked_side, home, away, spread, home_pts, away_pts)
+        if market_type == "total":
+            result = grade_total(picked_side, locked_total, home_pts + away_pts)
+        else:
+            result = bh.grade_ats(picked_side, home, away, spread, home_pts, away_pts)
         overall[result] += 1
         by_rank.setdefault(rank, _new_bucket())[result] += 1
+        by_market.setdefault(market_type or "spread", _new_bucket())[result] += 1
 
     def _finalize(bucket):
         decided = bucket["win"] + bucket["loss"]
@@ -302,6 +366,7 @@ def grade_contest_entries(conn, season, contest=None):
     return {
         "overall": _finalize(overall),
         "by_rank": {rank: _finalize(bucket) for rank, bucket in by_rank.items()},
+        "by_market": {m: _finalize(bucket) for m, bucket in by_market.items()},
     }
 
 
@@ -355,6 +420,7 @@ def main():
                 if pit_result is not None:
                     pit_weeks_done.append((week, *pit_result))
 
+            clv_corrected = recompute_settled_clv(conn, season)
             rank_report = grade_contest_entries(conn, season)
         finally:
             conn.close()
@@ -366,6 +432,8 @@ def main():
         if len(weeks) > 1:
             for week, ws, wg, wh in per_week:
                 print(f"  Week {week}: {ws} scored, {wg} graded ({wh} hooks)")
+        if clv_corrected:
+            print(f"Recomputed CLV for {clv_corrected} settled pick(s) against pre-kickoff lines.")
         for week, rows_added, status in pit_weeks_done:
             print(f"Point-in-time stats through week {week}: {status} ({rows_added} team rows)")
 

@@ -151,6 +151,7 @@ def test_load_pool_entries_reads_csv(tmp_path):
     assert entries[0] == {
         "game_id": 401636915, "home_team": "Oklahoma State", "away_team": "Arizona State",
         "pool_home_spread": -1.0, "picked_side": "Oklahoma State", "rank": None,
+        "market_type": "spread", "locked_total": None,
     }
     assert entries[1]["pool_home_spread"] == -17.5
 
@@ -534,7 +535,7 @@ def test_ingest_contest_csv_is_idempotent(temp_db, tmp_path):
     conn.close()
 
     assert first == {"inserted": 1, "skipped": [], "unmatched": []}
-    assert second == {"inserted": 0, "skipped": [{"game_id": 1, "home_team": "X", "away_team": "Y"}],
+    assert second == {"inserted": 0, "skipped": [{"game_id": 1, "home_team": "X", "away_team": "Y", "market_type": "spread"}],
                        "unmatched": []}
     assert count == 1
 
@@ -567,7 +568,7 @@ def test_ingest_contest_csv_reports_skipped_rows_explicitly(temp_db, tmp_path):
     conn.close()
 
     assert result["inserted"] == 1
-    assert result["skipped"] == [{"game_id": 1, "home_team": "X", "away_team": "Y"}]
+    assert result["skipped"] == [{"game_id": 1, "home_team": "X", "away_team": "Y", "market_type": "spread"}]
 
 
 def test_reingesting_a_changed_csv_does_not_alter_the_locked_spread(temp_db, tmp_path):
@@ -606,7 +607,7 @@ def test_reingesting_a_changed_csv_does_not_alter_the_locked_spread(temp_db, tmp
     conn.close()
 
     assert result["inserted"] == 0  # nothing new inserted -- the row was refused, not overwritten
-    assert result["skipped"] == [{"game_id": 1, "home_team": "X", "away_team": "Y"}]
+    assert result["skipped"] == [{"game_id": 1, "home_team": "X", "away_team": "Y", "market_type": "spread"}]
     assert count == 1     # no duplicate row created either
     assert row[0] == entry_id
     assert row[1] == -3.0   # ORIGINAL locked spread, untouched by the re-ingest

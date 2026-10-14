@@ -257,6 +257,12 @@ def persist_picks_to_db(conn, card):
     recommendation (1) or a suppressed no-pick (0); build_season_ledger()
     filters to qualifies=1 so this never inflates the "official" record.
 
+    The LEARNING lane follows the market (2026-10-14): this runs on every
+    odds pull (Tuesday report and both midweek pulls), so a pending pick's
+    consensus_spread/edge/side track the latest PRE-GAME line until
+    kickoff, then freeze. The pool lane is the opposite by design --
+    contest_entries are immutable at the Tuesday-noon freeze (pool_view.py).
+
     Idempotent per game_id, but not frozen at first-persist like before:
     a game with no existing pick_type='live' row gets one INSERTed. A game
     that already has a row gets it UPDATEd (consensus_spread,
@@ -290,7 +296,8 @@ def persist_picks_to_db(conn, card):
         confidence_signals = json.dumps([game["confidence"]])
         existing = conn.execute(
             "SELECT id, status, consensus_spread, projected_spread, edge, recommended_side, "
-            "confidence_signals, qualifies FROM picks WHERE game_id = ? AND pick_type = 'live'",
+            "confidence_signals, qualifies, line_movement FROM picks "
+            "WHERE game_id = ? AND pick_type = 'live'",
             (game["game_id"],),
         ).fetchone()
 
@@ -302,21 +309,30 @@ def persist_picks_to_db(conn, card):
                     consensus_spread, projected_spread, edge, recommended_side,
                     units, confidence_signals, key_factors, line_movement, weather,
                     risk_flags, qualifies, status, pick_type, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, '[]', NULL, '{}', '[]', ?, 'pending', 'live', ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, '[]', ?, '{}', '[]', ?, 'pending', 'live', ?)
                 """,
                 (
                     game["game_id"], card["week"], card["season"],
                     game["home_team"], game["away_team"],
                     game["market_home_spread"], game["predicted_home_margin"], game["edge"],
-                    game["side"], confidence_signals, qualifies, now,
+                    game["side"], confidence_signals,
+                    json.dumps({"first_spread": game["market_home_spread"], "first_seen_at": now}),
+                    qualifies, now,
                 ),
             )
             rows_added += 1
             continue
 
         (pick_id, status, old_spread, old_margin, old_edge,
-         old_side, old_signals, old_qualifies) = existing
+         old_side, old_signals, old_qualifies, old_line_movement) = existing
         if status != "pending":
+            continue
+        # Freeze at kickoff: the learning lane tracks the market UNTIL the
+        # game starts and not after. get_latest_line() already refuses
+        # in-play snapshots, but a re-run after kickoff must also not
+        # re-derive a pick for a game that is under way or finished.
+        kickoff = (game.get("start_date") or "")[:19]
+        if kickoff and kickoff <= now[:19]:
             continue
         if (old_spread, old_margin, old_edge, old_side, old_signals, old_qualifies) == (
             game["market_home_spread"], game["predicted_home_margin"], game["edge"],
@@ -324,12 +340,20 @@ def persist_picks_to_db(conn, card):
         ):
             continue  # nothing changed since it was last persisted -- no-op, not a write
 
+        # Preserve the FIRST line this pick was ever made at (CLV baseline).
+        # Rows created before this column was used have NULL: their stored
+        # consensus_spread IS the first line (it was frozen), so capture it
+        # now, before this UPDATE overwrites it with the followed line.
+        line_movement = old_line_movement or json.dumps(
+            {"first_spread": old_spread, "first_seen_at": now}
+        )
         conn.execute(
             "UPDATE picks SET consensus_spread = ?, projected_spread = ?, edge = ?, "
-            "recommended_side = ?, confidence_signals = ?, qualifies = ? WHERE id = ?",
+            "recommended_side = ?, confidence_signals = ?, qualifies = ?, line_movement = ? "
+            "WHERE id = ?",
             (
                 game["market_home_spread"], game["predicted_home_margin"], game["edge"],
-                game["side"], confidence_signals, qualifies, pick_id,
+                game["side"], confidence_signals, qualifies, line_movement, pick_id,
             ),
         )
         rows_updated += 1

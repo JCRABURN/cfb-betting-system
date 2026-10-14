@@ -294,6 +294,29 @@ def _market_movement_rows(gambling):
     return "\n".join(rows)
 
 
+def _totals_movement_rows(totals):
+    """Live over/under movement (gambling_view.build_totals_view). Baseline
+    is the first total we recorded for a real book, not necessarily the
+    market's true opener -- totals collection began 2026-10-14."""
+    if not totals or not totals["games"]:
+        return ('<tr><td colspan="5"><div class="empty-state">No totals recorded yet this week '
+                '&mdash; collection began 2026-10-14, so the next pull will populate this.</div></td></tr>')
+    rows = []
+    for g in totals["games"]:
+        arrow = {"up": "&uarr; toward over", "down": "&darr; toward under", "flat": "flat"}[g["direction"]]
+        flag = (' <span class="pill flip" title="Latest total came from a different book than the first-seen one">'
+                "book mismatch</span>") if not g["same_book_match"] else ""
+        rows.append(
+            f'<tr><td class="matchup"><span class="away">{_esc(g["away_team"])}</span>'
+            f'<span class="at">@</span>{_esc(g["home_team"])}</td>'
+            f'<td class="num mono">{g["first_seen_total"]:.1f}</td>'
+            f'<td class="num mono">{g["latest_total"]:.1f}</td>'
+            f'<td class="mono">{g["magnitude"]:.1f} pts {arrow}</td>'
+            f'<td class="num mono">{_esc(g["latest_book"])}{flag}</td></tr>'
+        )
+    return "\n".join(rows)
+
+
 def _pool_ranking_rows(ranked):
     """External review's one accepted gap, closed this project's own way
     (2026-08-04): pool_view.rank_pool_picks() ranks the pool's OWN locked
@@ -316,11 +339,17 @@ def _pool_ranking_rows(ranked):
             'no in-season data exists yet (Week 1)">low conf.</span>'
             if g.get("confidence") == "low_confidence_prior_season_data" else ""
         )
+        is_total = g.get("market_type") == "total"
+        pick = (
+            f'{_esc(g["picked_side"]).capitalize()} {g["locked_total"]:.1f} <span class="pill flat">total</span>'
+            if is_total else _esc(g["picked_side"])
+        )
         rows.append(
             f'<tr><td class="num mono">{g["rank"]}</td>'
+            f'<td class="num mono">{g.get("suggested_points", "&mdash;")}</td>'
             f'<td class="matchup"><span class="away">{_esc(g["away_team"])}</span>'
             f'<span class="at">@</span>{_esc(g["home_team"])}</td>'
-            f'<td>{_esc(g["picked_side"])}{badge}</td>'
+            f'<td>{pick}{badge}</td>'
             f'<td class="num mono">{g["signed_drift_vs_pick"]:+.1f}</td>'
             f'<td class="num mono">{edge_str}</td></tr>'
         )
@@ -335,12 +364,18 @@ def _pool_drift_rows(pool):
         pill_class = {"toward_pick": "toward", "away_from_pick": "away", "flat": "flat"}[g["movement_vs_pick"]]
         pill_label = {"toward_pick": "toward pick", "away_from_pick": "away from pick", "flat": "flat"}[g["movement_vs_pick"]]
         flip = ' <span class="pill flip">flipped</span>' if g["favorite_flipped"] else ""
+        if g.get("market_type") == "total":
+            picked = f'{_esc(g["picked_side"]).capitalize()} (total)'
+            pool_line, live_line = f'{g["locked_total"]:.1f}', f'{g["live_total"]:.1f}'
+        else:
+            picked = _esc(g["picked_side"])
+            pool_line, live_line = f'{g["pool_home_spread"]:+.1f}', f'{g["live_home_spread"]:+.1f}'
         rows.append(
             f'<tr><td class="matchup"><span class="away">{_esc(g["away_team"])}</span>'
             f'<span class="at">@</span>{_esc(g["home_team"])}</td>'
-            f'<td>{_esc(g["picked_side"])}</td>'
-            f'<td class="num mono">{g["pool_home_spread"]:+.1f}</td>'
-            f'<td class="num mono">{g["live_home_spread"]:+.1f}</td>'
+            f'<td>{picked}</td>'
+            f'<td class="num mono">{pool_line}</td>'
+            f'<td class="num mono">{live_line}</td>'
             f'<td><span class="pill {pill_class}">{pill_label}, {abs(g["signed_drift_vs_pick"]):.1f} pts</span>{flip}</td></tr>'
         )
     return "\n".join(rows)
@@ -456,8 +491,8 @@ def render_dashboard(season, week, card, gambling, pool, ranked, ledger, healths
         )
     else:
         ranking_body = (
-            '<div class="table-wrap"><table><thead><tr><th>Rank</th><th>Game</th><th>Picked</th>'
-            '<th>Drift toward pick</th><th>Edge (tiebreak only)</th></tr></thead>'
+            '<div class="table-wrap"><table><thead><tr><th>Rank</th><th>Pool pts</th><th>Game</th>'
+            '<th>Picked</th><th>Drift toward pick</th><th>Edge (tiebreak only)</th></tr></thead>'
             f"<tbody>{ranking_rows}</tbody></table></div>"
         )
 
@@ -523,6 +558,16 @@ def render_dashboard(season, week, card, gambling, pool, ranked, ledger, healths
     {market_banner}
     <div class="table-wrap"><table><thead><tr><th>Game</th><th>Open</th><th>Latest</th><th>Movement</th><th class="num">Book</th></tr></thead>
     <tbody>{_market_movement_rows(gambling)}</tbody></table></div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head">
+      <div><div class="eyebrow headline">Headline &middot; Market Read</div><h2 class="display">Totals Movement</h2></div>
+      <div class="asof mono">first seen &rarr; latest pre-game, same book</div>
+    </div>
+    <p class="dek">Over/under totals, first number recorded vs. the latest <em>pre-kickoff</em> number from the same book. In-play prices are excluded. This is the live, adjusting market; your pool's own numbers are frozen at Tuesday noon and are compared against it above.</p>
+    <div class="table-wrap"><table><thead><tr><th>Game</th><th>First seen</th><th>Latest</th><th>Movement</th><th class="num">Book</th></tr></thead>
+    <tbody>{_totals_movement_rows((gambling or {}).get("totals"))}</tbody></table></div>
   </section>
 
   <section class="panel">
@@ -597,6 +642,9 @@ def main():
 
             card, _ = _try_build("card", card_generator.build_card, conn, season, week)
             gambling, _ = _try_build("gambling_view", gambling_view.build_gambling_view, conn, season, week)
+            totals_view, _ = _try_build("totals_view", gambling_view.build_totals_view, conn, season, week)
+            if gambling is not None:
+                gambling["totals"] = totals_view
 
             entries = pool_view.load_pool_entries_from_db(conn, season, week)
             pool = None

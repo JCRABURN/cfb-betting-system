@@ -37,7 +37,7 @@ sys.path.insert(0, os.path.join(_ROOT, "data"))
 import db
 import fetch_stats
 import fetch_odds
-from line_utils import get_latest_line
+from line_utils import get_latest_line, get_latest_total
 
 DEFAULT_CONTEST = "pool"
 
@@ -64,6 +64,50 @@ POOL_RANKING_EXCLUDED_FLAGS = {
 }
 POOL_RANKING_SIZE = 5
 
+# Market types a pool entry can be. A spread entry picks a side against
+# locked_home_spread; a total entry picks 'over'/'under' against locked_total.
+MARKET_SPREAD, MARKET_TOTAL = "spread", "total"
+TOTAL_SIDES = ("over", "under")
+
+# Std-dev of the outcome around the closing line, measured over 1,482
+# consensus-closed games 2021-2025 (2026-10-14): spreads 15.41, totals
+# 15.63. Near-identical, so a point of drift is worth about the same in
+# either market; they are kept as separate constants so a later
+# re-measurement can't silently change both. Used to put spread drift and
+# total drift on one z-scale for cross-market ranking.
+SPREAD_SIGMA = 15.4
+TOTAL_SIGMA = 15.6
+
+
+def _build_total_entry(conn, pick):
+    """Drift for one over/under pool entry: the pool's FROZEN total vs the
+    latest pre-kickoff market total. Over: the market total rising above the
+    locked number is movement TOWARD the pick (the over became easier to
+    cover from the pool's stale number); Under: the opposite. Same sign
+    convention as spreads -- positive signed_drift_vs_pick = market has
+    confirmed the pick. None if there is no live total at all."""
+    latest = get_latest_total(conn, pick["game_id"])
+    if latest is None:
+        return None
+    locked = pick["locked_total"]
+    drift = round(latest["total"] - locked, 2)
+    signed = drift if pick["picked_side"] == "over" else -drift
+    return {
+        "market_type": MARKET_TOTAL,
+        "game_id": pick["game_id"],
+        "home_team": pick["home_team"],
+        "away_team": pick["away_team"],
+        "picked_side": pick["picked_side"],
+        "locked_total": locked,
+        "live_total": latest["total"],
+        "live_book": latest["book"],
+        "live_line_type": latest["line_type"],
+        "drift": drift,
+        "signed_drift_vs_pick": signed,
+        "movement_vs_pick": "toward_pick" if signed > 0 else "away_from_pick" if signed < 0 else "flat",
+        "favorite_flipped": False,
+    }
+
 
 def build_pool_view(conn, pool_entries):
     """pool_entries: see module docstring. Returns every entry with the
@@ -78,9 +122,20 @@ def build_pool_view(conn, pool_entries):
         game_id = pick["game_id"]
         home_team = pick["home_team"]
         away_team = pick["away_team"]
-        pool_spread = pick["pool_home_spread"]
         picked_side = pick["picked_side"]
 
+        if pick.get("market_type", MARKET_SPREAD) == MARKET_TOTAL:
+            entry = _build_total_entry(conn, pick)
+            if entry is None:
+                skipped.append({
+                    "game_id": game_id, "home_team": home_team, "away_team": away_team,
+                    "market_type": MARKET_TOTAL, "reason": "no_live_total",
+                })
+            else:
+                entries.append(entry)
+            continue
+
+        pool_spread = pick["pool_home_spread"]
         latest = get_latest_line(conn, game_id)
         if latest is None:
             skipped.append({
@@ -107,6 +162,7 @@ def build_pool_view(conn, pool_entries):
             movement_vs_pick = "flat"
 
         entries.append({
+            "market_type": MARKET_SPREAD,
             "game_id": game_id,
             "home_team": home_team,
             "away_team": away_team,
@@ -156,7 +212,10 @@ def load_pool_entries(path):
     present-but-out-of-[1,5]-range value here, at load time, rather than
     letting a malformed CSV fail later with a less legible DB-level error.
 
-    No other schema beyond these six columns; extra columns are ignored."""
+    Optional columns (added 2026-10-14, absent in older CSVs): `market_type`
+    ('spread' default | 'total') and `locked_total`. A total row leaves
+    pool_home_spread blank, sets locked_total, and picks 'over'/'under';
+    a spread row is unchanged. Extra columns beyond these are ignored."""
     entries = []
     with open(path, newline="", encoding="utf-8") as f:
         for row in csv.DictReader(f):
@@ -168,12 +227,43 @@ def load_pool_entries(path):
                     f"rank must be {RANK_MIN}-{RANK_MAX} or blank, got {rank!r} "
                     f"for {row.get('home_team')} vs {row.get('away_team')} in {path}"
                 )
+            market_type = (row.get("market_type") or MARKET_SPREAD).strip().lower()
+            if market_type not in (MARKET_SPREAD, MARKET_TOTAL):
+                raise ValueError(
+                    f"market_type must be 'spread' or 'total', got {market_type!r} "
+                    f"for {row.get('home_team')} vs {row.get('away_team')} in {path}"
+                )
+            picked_side = row["picked_side"].strip()
+            raw_spread = (row.get("pool_home_spread") or "").strip()
+            raw_total = (row.get("locked_total") or "").strip()
+            if market_type == MARKET_TOTAL:
+                if not raw_total:
+                    raise ValueError(
+                        f"total entry needs locked_total: {row.get('home_team')} vs "
+                        f"{row.get('away_team')} in {path}"
+                    )
+                picked_side = picked_side.lower()
+                if picked_side not in TOTAL_SIDES:
+                    raise ValueError(
+                        f"total entry picked_side must be 'over' or 'under', got {picked_side!r} "
+                        f"for {row.get('home_team')} vs {row.get('away_team')} in {path}"
+                    )
+                pool_home_spread, locked_total = None, float(raw_total)
+            else:
+                if not raw_spread:
+                    raise ValueError(
+                        f"spread entry needs pool_home_spread: {row.get('home_team')} vs "
+                        f"{row.get('away_team')} in {path}"
+                    )
+                pool_home_spread, locked_total = float(raw_spread), None
             entries.append({
                 "game_id": int(raw_game_id) if raw_game_id else None,
                 "home_team": row["home_team"].strip(),
                 "away_team": row["away_team"].strip(),
-                "pool_home_spread": float(row["pool_home_spread"]),
-                "picked_side": row["picked_side"].strip(),
+                "market_type": market_type,
+                "pool_home_spread": pool_home_spread,
+                "locked_total": locked_total,
+                "picked_side": picked_side,
                 "rank": rank,
             })
     return entries
@@ -245,7 +335,9 @@ def ingest_contest_csv(conn, csv_path, season, week, contest=DEFAULT_CONTEST):
         norm_away = fetch_odds.resolve_school_name(schools, raw_away)
 
         raw_side = entry["picked_side"]
-        if raw_side == raw_home:
+        if entry["market_type"] == MARKET_TOTAL:
+            norm_side = raw_side          # 'over' / 'under', already validated + lowercased
+        elif raw_side == raw_home:
             norm_side = norm_home
         elif raw_side == raw_away:
             norm_side = norm_away
@@ -264,18 +356,19 @@ def ingest_contest_csv(conn, csv_path, season, week, contest=DEFAULT_CONTEST):
 
         cur = conn.execute(
             "INSERT OR IGNORE INTO contest_entries ("
-            "contest, season, week, game_id, raw_home_team, raw_away_team, "
-            "normalized_home_team, normalized_away_team, locked_home_spread, "
+            "contest, season, week, game_id, market_type, raw_home_team, raw_away_team, "
+            "normalized_home_team, normalized_away_team, locked_home_spread, locked_total, "
             "picked_side, rank, locked_at, source"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (contest, season, week, game_id, raw_home, raw_away,
-             norm_home, norm_away, entry["pool_home_spread"], norm_side,
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (contest, season, week, game_id, entry["market_type"], raw_home, raw_away,
+             norm_home, norm_away, entry["pool_home_spread"], entry["locked_total"], norm_side,
              entry["rank"], locked_at, source),
         )
         if cur.rowcount:
             inserted += 1
         else:
-            skipped.append({"game_id": game_id, "home_team": raw_home, "away_team": raw_away})
+            skipped.append({"game_id": game_id, "home_team": raw_home, "away_team": raw_away,
+                            "market_type": entry["market_type"]})
     conn.commit()
     return {"inserted": inserted, "skipped": skipped, "unmatched": unmatched}
 
@@ -290,21 +383,22 @@ def load_pool_entries_from_db(conn, season, week, contest=DEFAULT_CONTEST):
     correct_contest_entry()."""
     rows = conn.execute(
         "SELECT id, game_id, normalized_home_team, normalized_away_team, "
-        "locked_home_spread, picked_side, rank FROM contest_entries "
-        "WHERE contest = ? AND season = ? AND week = ? ORDER BY game_id",
+        "locked_home_spread, picked_side, rank, market_type, locked_total FROM contest_entries "
+        "WHERE contest = ? AND season = ? AND week = ? ORDER BY game_id, market_type",
         (contest, season, week),
     ).fetchall()
     return [
         {
             "entry_id": r[0], "game_id": r[1], "home_team": r[2], "away_team": r[3],
             "pool_home_spread": r[4], "picked_side": r[5], "rank": r[6],
+            "market_type": r[7], "locked_total": r[8],
         }
         for r in rows
     ]
 
 
 def correct_contest_entry(conn, entry_id, reason, new_locked_home_spread=None, new_picked_side=None,
-                           new_rank=None):
+                           new_rank=None, new_locked_total=None):
     """The ONLY sanctioned way to change an already-locked contest_entries
     row (external review, accepted 2026-08-04). Writes the ORIGINAL values
     to contest_entry_corrections BEFORE touching contest_entries, so a
@@ -328,32 +422,48 @@ def correct_contest_entry(conn, entry_id, reason, new_locked_home_spread=None, n
     this exists to prevent."""
     if not reason or not reason.strip():
         raise ValueError("correct_contest_entry requires a non-empty reason")
-    if new_locked_home_spread is None and new_picked_side is None and new_rank is None:
+    if (new_locked_home_spread is None and new_picked_side is None and new_rank is None
+            and new_locked_total is None):
         raise ValueError("correct_contest_entry requires at least one corrected value")
     if new_rank is not None and not (RANK_MIN <= new_rank <= RANK_MAX):
         raise ValueError(f"new_rank must be {RANK_MIN}-{RANK_MAX}, got {new_rank!r}")
 
     row = conn.execute(
-        "SELECT locked_home_spread, picked_side, rank FROM contest_entries WHERE id = ?",
+        "SELECT locked_home_spread, picked_side, rank, market_type, locked_total "
+        "FROM contest_entries WHERE id = ?",
         (entry_id,),
     ).fetchone()
     if row is None:
         raise ValueError(f"No contest_entries row with id {entry_id}")
-    original_spread, original_side, original_rank = row
+    original_spread, original_side, original_rank, market_type, original_total = row
+
+    # A correction must stay inside the entry's own market: a spread number
+    # on a total entry (or the reverse) would silently corrupt grading.
+    if market_type == MARKET_TOTAL:
+        if new_locked_home_spread is not None:
+            raise ValueError("cannot set a locked spread on a total entry; use new_locked_total")
+        if new_picked_side is not None and new_picked_side.lower() not in TOTAL_SIDES:
+            raise ValueError(f"total entry side must be 'over' or 'under', got {new_picked_side!r}")
+        if new_picked_side is not None:
+            new_picked_side = new_picked_side.lower()
+    elif new_locked_total is not None:
+        raise ValueError("cannot set a locked total on a spread entry; use new_locked_home_spread")
 
     corrected_at = datetime.utcnow().isoformat()
     conn.execute(
         "INSERT INTO contest_entry_corrections ("
-        "original_entry_id, original_locked_home_spread, original_picked_side, original_rank, "
-        "corrected_locked_home_spread, corrected_picked_side, corrected_rank, reason, corrected_at"
-        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (entry_id, original_spread, original_side, original_rank, new_locked_home_spread,
-         new_picked_side, new_rank, reason, corrected_at),
+        "original_entry_id, original_locked_home_spread, original_locked_total, "
+        "original_picked_side, original_rank, corrected_locked_home_spread, "
+        "corrected_locked_total, corrected_picked_side, corrected_rank, reason, corrected_at"
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (entry_id, original_spread, original_total, original_side, original_rank,
+         new_locked_home_spread, new_locked_total, new_picked_side, new_rank, reason, corrected_at),
     )
     conn.execute(
         "UPDATE contest_entries SET locked_home_spread = COALESCE(?, locked_home_spread), "
+        "locked_total = COALESCE(?, locked_total), "
         "picked_side = COALESCE(?, picked_side), rank = COALESCE(?, rank), corrected_at = ? WHERE id = ?",
-        (new_locked_home_spread, new_picked_side, new_rank, corrected_at, entry_id),
+        (new_locked_home_spread, new_locked_total, new_picked_side, new_rank, corrected_at, entry_id),
     )
     conn.commit()
 
@@ -397,22 +507,38 @@ def rank_pool_picks(pool_view, card=None):
 
     eligible = []
     for g in pool_view["games"]:
-        if confidence_by_game.get(g["game_id"]) in POOL_RANKING_EXCLUDED_FLAGS:
+        if (g.get("market_type") != MARKET_TOTAL
+                and confidence_by_game.get(g["game_id"]) in POOL_RANKING_EXCLUDED_FLAGS):
             continue
+        is_total = g.get("market_type") == MARKET_TOTAL
         eligible.append({
             **g,
-            "edge": edge_by_game.get(g["game_id"]),
-            "confidence": confidence_by_game.get(g["game_id"]),
+            # No model output exists for totals (Phase 2); never borrow the
+            # SPREAD edge of the same game for a total entry.
+            "edge": None if is_total else edge_by_game.get(g["game_id"]),
+            "confidence": None if is_total else confidence_by_game.get(g["game_id"]),
         })
 
+    # Cross-market ordering: a point of drift on a total and on a spread are
+    # put on one scale by dividing by each market's measured outcome noise
+    # (SPREAD_SIGMA / TOTAL_SIGMA), so a heavily-moved total can outrank a
+    # flat spread and vice versa. Model edge exists only for spread entries
+    # and remains a tiebreak only.
+    for g in eligible:
+        sigma = TOTAL_SIGMA if g.get("market_type") == MARKET_TOTAL else SPREAD_SIGMA
+        g["drift_z"] = round(g["signed_drift_vs_pick"] / sigma, 4)
+
     eligible.sort(
-        key=lambda g: (g["signed_drift_vs_pick"], g["edge"] if g["edge"] is not None else float("-inf")),
+        key=lambda g: (g["drift_z"], g["edge"] if g["edge"] is not None else float("-inf")),
         reverse=True,
     )
 
     ranked = eligible[:POOL_RANKING_SIZE]
     for i, g in enumerate(ranked):
-        g["rank"] = i + 1
+        g["rank"] = i + 1                              # board position, 1 = strongest
+        # The pool is rank-weighted, 5 = most confident (15 points/week), so
+        # the strongest pick belongs in the 5-point slot.
+        g["suggested_points"] = POOL_RANKING_SIZE - i
     return ranked
 
 

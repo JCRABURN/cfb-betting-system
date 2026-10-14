@@ -33,7 +33,10 @@ ODDS_BASE = "https://api.the-odds-api.com/v4"
 
 SPORT = "americanfootball_ncaaf"
 REGIONS = "us"
-MARKETS = "spreads"
+# Totals added 2026-10-14. The Odds API bills one credit per market per
+# region per request, so this doubles each pull (1 -> 2). At 3 scheduled
+# pulls/week that is ~26 credits/month against the 500/month free tier.
+MARKETS = "spreads,totals"
 # Caesars dropped 2026-08-04: confirmed live (twice -- once during initial
 # testing, again against a full real week 1 pull) that it never appears in
 # any game's book listing. Keeping it in the config implied 4-book coverage
@@ -43,7 +46,7 @@ BOOKMAKERS = "draftkings,fanduel,betmgm"
 # Bumped whenever the parsing logic below changes in a way that would
 # matter for replaying an archived raw_payloads row through a fixed
 # parser (external review, accepted 2026-08-04).
-PARSER_VERSION = "fetch_odds.v1"
+PARSER_VERSION = "fetch_odds.v2"  # v2: totals market parsed
 
 # Known cases (found by spot-checking a live Odds API response against our
 # CFBD-sourced teams table, 2026-07-29) where CFBD's official school name
@@ -64,6 +67,52 @@ KNOWN_TEAM_ALIASES = {
     "FIU": "Florida International",
     "FAU": "Florida Atlantic",
 }
+
+
+def parse_totals(game):
+    """{book: {"total", "over_price", "under_price"}} from one raw Odds API
+    game dict, plus the consensus (mean) total. Deliberately a SEPARATE
+    structure from the spreads parse in fetch_current_lines(): the spread
+    path is load-bearing for every report, so totals must not be able to
+    break it -- a malformed or missing totals block yields {} / None here
+    and the spread data is untouched. Over and Under outcomes share one
+    point; the first one seen sets it."""
+    totals = {}
+    for bookmaker in game.get("bookmakers", []) or []:
+        for market in bookmaker.get("markets", []) or []:
+            if market.get("key") != "totals":
+                continue
+            entry = {}
+            for outcome in market.get("outcomes", []) or []:
+                name = (outcome.get("name") or "").lower()
+                point = outcome.get("point")
+                if point is None or name not in ("over", "under"):
+                    continue
+                entry.setdefault("total", point)
+                entry[f"{name}_price"] = outcome.get("price")
+            if "total" in entry:
+                totals[bookmaker["key"]] = entry
+    consensus = (
+        round(sum(v["total"] for v in totals.values()) / len(totals), 1) if totals else None
+    )
+    return totals, consensus
+
+
+def is_in_play(commence_time, now=None):
+    """True if the game's scheduled commence_time is at or before `now`
+    (UTC). The Odds API's /odds endpoint also returns games already in
+    progress with live prices; those are not lines anyone could bet before
+    kickoff and must not be stored as 'current' (see line_utils.
+    _PRE_KICKOFF_SQL for the read-side counterpart and the incident that
+    motivated both). Unparseable/missing commence_time returns False, so a
+    game is kept rather than silently dropped."""
+    if not commence_time:
+        return False
+    try:
+        ct = datetime.strptime(commence_time[:19], "%Y-%m-%dT%H:%M:%S")
+    except ValueError:
+        return False
+    return ct <= (now or datetime.utcnow())
 
 
 def fetch_current_lines(conn=None):
@@ -132,12 +181,20 @@ def fetch_current_lines(conn=None):
             if all_home_spreads else None
         )
 
+        try:
+            totals, consensus_total = parse_totals(game)
+        except Exception as e:  # never let totals take down the spread path
+            print(f"WARNING: totals parse failed for {home} vs {away}: {e}")
+            totals, consensus_total = {}, None
+
         processed.append({
             "game_id": game.get("id"),
             "home_team": home,
             "away_team": away,
             "commence_time": commence,
             "consensus_home_spread": consensus_spread,
+            "consensus_total": consensus_total,
+            "totals": totals,
             "books": lines,
             "fetched_at": datetime.utcnow().isoformat()
         })
@@ -276,17 +333,29 @@ def find_game_id(conn, week, year, home, away):
 
 
 def persist_lines_to_db(games_list, week, year, line_type):
-    """Write one betting_lines row per book (plus a synthetic 'consensus' row) per game."""
+    """Write one betting_lines row per book (plus a synthetic 'consensus' row) per game.
+
+    Games already in progress (commence_time <= now) are skipped: the
+    Odds API returns live in-play prices alongside upcoming games, and
+    storing those as 'current' corrupted CLV and the movement view
+    (found 2026-10-14; see is_in_play). Totals (added 2026-10-14) ride on
+    the same per-book rows via the `total` column; a book that posted a
+    total but no spread still gets a row (home_spread NULL), which every
+    spread reader already excludes via `home_spread IS NOT NULL`."""
     now = datetime.utcnow().isoformat()
     conn = db.get_connection()
     rows_added = 0
     unmatched = 0
+    skipped_in_play = 0
     schools = load_school_names(conn)
     if not schools:
         print("WARNING: teams table is empty -- run data/backfill_historical_stats.py first, "
               "otherwise every team name below will fail to resolve to a CFBD game_id.")
     try:
         for game in games_list:
+            if is_in_play(game.get("commence_time")):
+                skipped_in_play += 1
+                continue
             raw_home = game.get("home_team")
             raw_away = game.get("away_team")
             home = resolve_school_name(schools, raw_home)
@@ -295,20 +364,22 @@ def persist_lines_to_db(games_list, week, year, line_type):
             if game_id is None:
                 unmatched += 1
 
-            for book, sides in game.get("books", {}).items():
+            spread_books = game.get("books", {})
+            total_books = game.get("totals", {}) or {}
+            for book in list(spread_books) + [b for b in total_books if b not in spread_books]:
                 # sides is keyed by the odds API's own (mascot-suffixed) team names
-                home_side = sides.get(raw_home, {})
+                home_side = spread_books.get(book, {}).get(raw_home, {})
                 conn.execute(
                     """
                     INSERT INTO betting_lines (
                         game_id, season, week, home_team, away_team, book,
-                        home_spread, home_moneyline, line_type, source, fetched_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'the_odds_api', ?)
+                        home_spread, total, home_moneyline, line_type, source, fetched_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'the_odds_api', ?)
                     """,
                     (
                         game_id, year, week, home, away, book,
-                        home_side.get("spread"), home_side.get("juice"),
-                        line_type, now,
+                        home_side.get("spread"), total_books.get(book, {}).get("total"),
+                        home_side.get("juice"), line_type, now,
                     ),
                 )
                 rows_added += 1
@@ -317,10 +388,11 @@ def persist_lines_to_db(games_list, week, year, line_type):
                 """
                 INSERT INTO betting_lines (
                     game_id, season, week, home_team, away_team, book,
-                    home_spread, line_type, source, fetched_at
-                ) VALUES (?, ?, ?, ?, ?, 'consensus', ?, ?, 'the_odds_api', ?)
+                    home_spread, total, line_type, source, fetched_at
+                ) VALUES (?, ?, ?, ?, ?, 'consensus', ?, ?, ?, 'the_odds_api', ?)
                 """,
-                (game_id, year, week, home, away, game.get("consensus_home_spread"), line_type, now),
+                (game_id, year, week, home, away, game.get("consensus_home_spread"),
+                 game.get("consensus_total"), line_type, now),
             )
             rows_added += 1
 
@@ -328,6 +400,8 @@ def persist_lines_to_db(games_list, week, year, line_type):
     finally:
         conn.close()
 
+    if skipped_in_play:
+        print(f"Skipped {skipped_in_play} game(s) already in play -- no pre-game line to store.")
     if unmatched:
         print(f"WARNING: {unmatched}/{len(games_list)} games had no matching CFBD game_id "
               f"(team-name join failed even after school-name resolution) — betting_lines "

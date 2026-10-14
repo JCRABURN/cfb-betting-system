@@ -37,7 +37,10 @@ sys.path.insert(0, _ROOT)
 sys.path.insert(0, os.path.join(_ROOT, "data"))
 import db
 import fetch_stats
-from line_utils import list_all_games, get_latest_line, get_opening_line_real_book
+from line_utils import (
+    list_all_games, get_latest_line, get_opening_line_real_book,
+    get_latest_total, get_first_seen_total_real_book,
+)
 
 
 def build_gambling_view(conn, season, week):
@@ -105,6 +108,55 @@ def build_gambling_view(conn, season, week):
     }
 
 
+def build_totals_view(conn, season, week):
+    """Total (over/under) movement for every game that has one, from the
+    FIRST total we recorded for a real book to the latest PRE-KICKOFF total
+    from that SAME book -- same same-book discipline as build_gambling_view.
+
+    "first seen", not "opening": totals only began being collected
+    2026-10-14 (fetch_odds.MARKETS was spreads-only), so for a game that was
+    already in-week at that point the baseline is the first snapshot we have,
+    not the market's true opener. `baseline_is_first_seen` is always true
+    here by design -- the label is honest about what the number is.
+
+    direction: "up" = market total rose (toward the over), "down" = fell
+    (toward the under). This is the LIVE, adjusting read -- the pool's own
+    numbers are frozen at the Tuesday-noon lock and are compared against
+    this in pool_view.py, never the other way round. No model signal."""
+    entries = []
+    skipped = []
+    for game_id, home_team, away_team, start_date in list_all_games(conn, season, week):
+        first = get_first_seen_total_real_book(conn, game_id)
+        if first is None:
+            skipped.append({"game_id": game_id, "home_team": home_team, "away_team": away_team,
+                            "reason": "no_total_recorded"})
+            continue
+        latest = get_latest_total(conn, game_id, prefer_book=first["book"])
+        if latest is None:
+            skipped.append({"game_id": game_id, "home_team": home_team, "away_team": away_team,
+                            "reason": "no_pre_kickoff_total"})
+            continue
+        movement = round(latest["total"] - first["total"], 2)
+        entries.append({
+            "game_id": game_id,
+            "home_team": home_team,
+            "away_team": away_team,
+            "start_date": start_date,
+            "first_seen_total": first["total"],
+            "first_seen_book": first["book"],
+            "latest_total": latest["total"],
+            "latest_book": latest["book"],
+            "same_book_match": latest["book"] == first["book"],
+            "baseline_is_first_seen": True,
+            "movement": movement,
+            "direction": "up" if movement > 0 else "down" if movement < 0 else "flat",
+            "magnitude": abs(movement),
+        })
+    entries.sort(key=lambda e: (-e["magnitude"], e["game_id"]))
+    return {"season": season, "week": week, "view": "totals_market_movement",
+            "games": entries, "skipped": skipped}
+
+
 def main():
     import argparse
     import json
@@ -124,6 +176,7 @@ def main():
         conn = db.get_connection()
         try:
             view = build_gambling_view(conn, season, week)
+            view["totals"] = build_totals_view(conn, season, week)
         finally:
             conn.close()
 
@@ -134,7 +187,8 @@ def main():
 
         run["rows_added"] = len(view["games"])
         print(f"Season {season} Week {week} gambling view: {len(view['games'])} games, "
-              f"{len(view['skipped'])} skipped. Saved to {out_path}")
+              f"{len(view['skipped'])} skipped; totals: {len(view['totals']['games'])} games, "
+              f"{len(view['totals']['skipped'])} without a total. Saved to {out_path}")
 
 
 if __name__ == "__main__":

@@ -45,6 +45,59 @@ def _load_dotenv(path=None):
 
 _load_dotenv()
 
+
+# Pool tables. Defined as bodies so init_db()'s one-time rebuild
+# (_rebuild_contest_tables_for_totals) and SCHEMA can never drift apart.
+#
+# 2026-10-14: a pool entry can now be a TOTAL (over/under) as well as a
+# spread pick. market_type selects which locked number applies:
+#   'spread' -> locked_home_spread set, picked_side is a team name
+#   'total'  -> locked_total set, picked_side is 'over' | 'under'
+# so locked_home_spread became nullable and the uniqueness key gained
+# market_type (a game can legitimately carry one spread and one total entry).
+# These numbers are FROZEN at the pool's Tuesday-noon line lock and are the
+# immutable counterpart to the live, market-following learning lane
+# (card_generator / picks) -- see ARCHITECTURE.md section 32.
+_CONTEST_ENTRIES_BODY = """
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    contest TEXT NOT NULL,
+    season INTEGER NOT NULL,
+    week INTEGER NOT NULL,
+    game_id INTEGER NOT NULL,
+    market_type TEXT NOT NULL DEFAULT 'spread',   -- 'spread' | 'total' (app-level check)
+    raw_home_team TEXT NOT NULL,         -- exactly as typed/exported into the CSV
+    raw_away_team TEXT NOT NULL,
+    normalized_home_team TEXT NOT NULL,  -- resolved against `teams`, may equal raw_*
+    normalized_away_team TEXT NOT NULL,
+    locked_home_spread REAL,             -- spread entries; NULL for totals
+    locked_total REAL,                   -- total entries; NULL for spreads
+    picked_side TEXT NOT NULL,           -- team name (spread) | 'over'/'under' (total)
+    rank INTEGER,                        -- confidence 1-5, 5 = most confident (pool scores the
+                                          -- rank as points: 15/week). Range enforced in
+                                          -- pool_view.py (app-level), not a DB CHECK constraint,
+                                          -- matching this schema's existing style
+    locked_at TEXT NOT NULL,
+    source TEXT NOT NULL,                -- e.g. 'csv:data/pool_picks/week_1_2026.csv'
+    corrected_at TEXT,                   -- NULL unless correct_contest_entry() has touched this row
+    UNIQUE(contest, season, week, game_id, market_type)
+"""
+
+_CONTEST_CORRECTIONS_BODY = """
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    original_entry_id INTEGER NOT NULL,
+    original_locked_home_spread REAL,
+    original_locked_total REAL,
+    original_picked_side TEXT NOT NULL,
+    original_rank INTEGER,
+    corrected_locked_home_spread REAL,
+    corrected_locked_total REAL,
+    corrected_picked_side TEXT,
+    corrected_rank INTEGER,
+    reason TEXT NOT NULL,
+    corrected_at TEXT NOT NULL,
+    FOREIGN KEY (original_entry_id) REFERENCES contest_entries(id)
+"""
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS teams (
     team_id INTEGER PRIMARY KEY,
@@ -308,46 +361,22 @@ CREATE INDEX IF NOT EXISTS idx_raw_payloads_lookup
 -- fact about what was seen at lock time, not something that should
 -- silently drift if the CSV is re-ingested. correct_contest_entry() in
 -- pool_view.py is the ONLY sanctioned way to change a locked value.
-CREATE TABLE IF NOT EXISTS contest_entries (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    contest TEXT NOT NULL,
-    season INTEGER NOT NULL,
-    week INTEGER NOT NULL,
-    game_id INTEGER NOT NULL,
-    raw_home_team TEXT NOT NULL,         -- exactly as typed/exported into the CSV
-    raw_away_team TEXT NOT NULL,
-    normalized_home_team TEXT NOT NULL,  -- resolved against `teams`, may equal raw_*
-    normalized_away_team TEXT NOT NULL,
-    locked_home_spread REAL NOT NULL,
-    picked_side TEXT NOT NULL,
-    rank INTEGER,                        -- confidence rank 1-5, nullable; range enforced in
-                                          -- pool_view.py (app-level), not a DB CHECK constraint,
-                                          -- matching this schema's existing style
-    locked_at TEXT NOT NULL,
-    source TEXT NOT NULL,                -- e.g. 'csv:data/pool_picks/week_1_2026.csv'
-    corrected_at TEXT,                   -- NULL unless correct_contest_entry() has touched this row
-    UNIQUE(contest, season, week, game_id)
-);
+@@CONTEST_ENTRIES_DDL@@
 
 -- Every correction to a contest_entries row: the ORIGINAL value, the new
 -- value, and why -- contest_entries itself is only ever UPDATEd by
 -- pool_view.correct_contest_entry(), and only after this ledger row is
 -- written first, so the original locked value is never lost, only
 -- superseded with an audit trail.
-CREATE TABLE IF NOT EXISTS contest_entry_corrections (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    original_entry_id INTEGER NOT NULL,
-    original_locked_home_spread REAL NOT NULL,
-    original_picked_side TEXT NOT NULL,
-    original_rank INTEGER,
-    corrected_locked_home_spread REAL,
-    corrected_picked_side TEXT,
-    corrected_rank INTEGER,
-    reason TEXT NOT NULL,
-    corrected_at TEXT NOT NULL,
-    FOREIGN KEY (original_entry_id) REFERENCES contest_entries(id)
-);
+@@CONTEST_CORRECTIONS_DDL@@
 """
+SCHEMA = SCHEMA.replace(
+    "@@CONTEST_ENTRIES_DDL@@",
+    "CREATE TABLE IF NOT EXISTS contest_entries (" + _CONTEST_ENTRIES_BODY + ");",
+).replace(
+    "@@CONTEST_CORRECTIONS_DDL@@",
+    "CREATE TABLE IF NOT EXISTS contest_entry_corrections (" + _CONTEST_CORRECTIONS_BODY + ");",
+)
 
 
 def get_connection():
@@ -390,6 +419,54 @@ def _migrate_schema(conn):
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {col_type}")
 
 
+def _rebuild_contest_tables_for_totals(conn):
+    """One-time rebuild (2026-10-14) of contest_entries and
+    contest_entry_corrections for total-based pool entries. SQLite cannot
+    drop a NOT NULL or change a UNIQUE constraint in place, so each table is
+    created new, copied, the old one dropped, and the new one renamed -- in
+    that order (never rename-the-old-aside: since SQLite 3.26 that rewrites
+    other tables' foreign-key references to point at the renamed table).
+    Existing rows are copied with their ids, so every
+    contest_entry_corrections.original_entry_id stays valid; they all become
+    market_type='spread'. Idempotent: skipped once market_type exists, so it
+    is safe on every init_db()."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(contest_entries)")}
+    if not cols or "market_type" in cols:
+        return
+
+    def copy_cols(table, new_cols_sql):
+        old = [r[1] for r in conn.execute(f"PRAGMA table_info({table})")]
+        new = [c.strip().split()[0] for c in new_cols_sql
+               if c.strip() and not c.strip().startswith(("UNIQUE", "FOREIGN"))]
+        return [c for c in new if c in old]
+
+    entries_body = [l for l in _CONTEST_ENTRIES_BODY.strip().splitlines()]
+    corr_body = [l for l in _CONTEST_CORRECTIONS_BODY.strip().splitlines()]
+    ec = ", ".join(copy_cols("contest_entries", [l.split("--")[0] for l in entries_body]))
+    cc = ", ".join(copy_cols("contest_entry_corrections", [l.split("--")[0] for l in corr_body]))
+
+    conn.commit()
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        conn.executescript(
+            "BEGIN;\n"
+            f"CREATE TABLE contest_entries_new ({_CONTEST_ENTRIES_BODY});\n"
+            f"INSERT INTO contest_entries_new ({ec}) SELECT {ec} FROM contest_entries;\n"
+            "DROP TABLE contest_entries;\n"
+            "ALTER TABLE contest_entries_new RENAME TO contest_entries;\n"
+            f"CREATE TABLE contest_entry_corrections_new ({_CONTEST_CORRECTIONS_BODY});\n"
+            f"INSERT INTO contest_entry_corrections_new ({cc}) SELECT {cc} FROM contest_entry_corrections;\n"
+            "DROP TABLE contest_entry_corrections;\n"
+            "ALTER TABLE contest_entry_corrections_new RENAME TO contest_entry_corrections;\n"
+            "COMMIT;"
+        )
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
+
+
 def _backfill_qualifies_column(conn):
     """One-time data correction (2026-09-08), permanently idempotent so it's
     safe to run on every init_db() call, not just once: `qualifies` was an
@@ -418,6 +495,7 @@ def init_db():
     try:
         conn.executescript(SCHEMA)
         _migrate_schema(conn)
+        _rebuild_contest_tables_for_totals(conn)
         _backfill_qualifies_column(conn)
         conn.commit()
     finally:

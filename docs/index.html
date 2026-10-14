@@ -113,11 +113,11 @@ footer .theme-toggle button.active { background: var(--ink); color: var(--bg); }
     </div>
     <div class="masthead-meta">
       <div class="week">Week 7 &middot; 2026</div>
-      <div class="synced">Generated Oct 13, 20:08 UTC</div>
+      <div class="synced">Generated Oct 14, 21:17 UTC</div>
     </div>
   </div>
 
-  <div class="health"><div class="health-chip ok"><span class="day">Tue · Card</span><span class="state"><span class="dot"></span>Updated</span><div class="ts mono">Oct 13, 20:08 UTC</div></div><div class="health-chip ok"><span class="day">Thu/Sat · Drift</span><span class="state"><span class="dot"></span>Updated</span><div class="ts mono">Oct 10, 18:22 UTC</div></div><div class="health-chip ok"><span class="day">Sat · Pool</span><span class="state"><span class="dot"></span>Updated</span><div class="ts mono">Oct 10, 18:22 UTC</div></div><div class="health-chip ok"><span class="day">Mon · Audit</span><span class="state"><span class="dot"></span>Updated</span><div class="ts mono">Oct 12, 20:09 UTC</div></div></div>
+  <div class="health"><div class="health-chip ok"><span class="day">Tue · Card</span><span class="state"><span class="dot"></span>Updated</span><div class="ts mono">Oct 13, 20:08 UTC</div></div><div class="health-chip stale"><span class="day">Thu/Sat · Drift</span><span class="state"><span class="dot"></span>Stale</span><div class="ts mono">Oct 10, 18:22 UTC</div></div><div class="health-chip stale"><span class="day">Sat · Pool</span><span class="state"><span class="dot"></span>Stale</span><div class="ts mono">Oct 10, 18:22 UTC</div></div><div class="health-chip ok"><span class="day">Mon · Audit</span><span class="state"><span class="dot"></span>Updated</span><div class="ts mono">Oct 12, 20:09 UTC</div></div></div>
 
   <section class="panel">
     <div class="panel-head">
@@ -125,7 +125,7 @@ footer .theme-toggle button.active { background: var(--ink); color: var(--bg); }
       <div class="asof mono">opening &rarr; latest, same book</div>
     </div>
     <p class="dek">Every lined game, opening line vs. the latest number from the <em>same</em> book. No model involved: this is what the market itself has done.</p>
-    
+    <div class="stale-banner"><span class="mark">&#9888;</span><span><strong>Market Movement may be out of date</strong> (last successful update: Oct 10, 18:22 UTC &mdash; no successful run recently enough). Showing the most recent data available, held over rather than hidden.</span></div>
     <div class="table-wrap"><table><thead><tr><th>Game</th><th>Open</th><th>Latest</th><th>Movement</th><th class="num">Book</th></tr></thead>
     <tbody><tr><td class="matchup"><span class="away">Auburn</span><span class="at">@</span>Georgia</td><td class="num mono">-20.5</td><td class="num mono">-20.5</td><td class="mono">0.0 pts &rarr; flat</td><td class="num mono">draftkings</td></tr>
 <tr><td class="matchup"><span class="away">Mississippi State</span><span class="at">@</span>LSU</td><td class="num mono">-14.0</td><td class="num mono">-14.0</td><td class="mono">0.0 pts &rarr; flat</td><td class="num mono">draftkings</td></tr>
@@ -188,11 +188,21 @@ footer .theme-toggle button.active { background: var(--ink); color: var(--bg); }
 
   <section class="panel">
     <div class="panel-head">
+      <div><div class="eyebrow headline">Headline &middot; Market Read</div><h2 class="display">Totals Movement</h2></div>
+      <div class="asof mono">first seen &rarr; latest pre-game, same book</div>
+    </div>
+    <p class="dek">Over/under totals, first number recorded vs. the latest <em>pre-kickoff</em> number from the same book. In-play prices are excluded. This is the live, adjusting market; your pool's own numbers are frozen at Tuesday noon and are compared against it above.</p>
+    <div class="table-wrap"><table><thead><tr><th>Game</th><th>First seen</th><th>Latest</th><th>Movement</th><th class="num">Book</th></tr></thead>
+    <tbody><tr><td colspan="5"><div class="empty-state">No totals recorded yet this week &mdash; collection began 2026-10-14, so the next pull will populate this.</div></td></tr></tbody></table></div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head">
       <div><div class="eyebrow headline">Headline &middot; Your Pool</div><h2 class="display">Pool Drift</h2></div>
       <div class="asof mono">vs. entered pool line</div>
     </div>
     <p class="dek">Your locked picks against the pool's own number, compared to where the market sits now. Sorted worst-for-your-pick first.</p>
-    
+    <div class="stale-banner"><span class="mark">&#9888;</span><span><strong>Pool Drift may be out of date</strong> (last successful update: Oct 10, 18:22 UTC &mdash; no successful run recently enough). Showing the most recent data available, held over rather than hidden.</span></div>
     <div class="empty-state">No pool picks entered for this week yet &mdash; run <code>models/pool_view.py</code> after committing <code>data/pool_picks/week_7_2026.csv</code>.</div>
   </section>
 
@@ -282,7 +292,7 @@ footer .theme-toggle button.active { background: var(--ink); color: var(--bg); }
       <div class="asof mono">updated Mondays after grading</div>
     </div>
     <p class="dek">Every graded pick counts here, wins and losses both &mdash; nothing excluded after the fact.</p>
-    <div class="stat-row"><div class="stat-cell"><span class="label">Record (ATS)</span><span class="value mono">150&ndash;140&ndash;1</span><div class="note">51.7%</div></div><div class="stat-cell"><span class="label">ROI</span><span class="value mono bad">-1.3%</span><div class="note">flat-staked, &minus;110 juice</div></div><div class="stat-cell"><span class="label">Avg CLV</span><span class="value mono">+0.30</span><div class="note">pts vs. closing line</div></div><div class="stat-cell"><span class="label">Hook losses</span><span class="value mono">9</span><div class="note">decided by half a point</div></div></div>
+    <div class="stat-row"><div class="stat-cell"><span class="label">Record (ATS)</span><span class="value mono">150&ndash;140&ndash;1</span><div class="note">51.7%</div></div><div class="stat-cell"><span class="label">ROI</span><span class="value mono bad">-1.3%</span><div class="note">flat-staked, &minus;110 juice</div></div><div class="stat-cell"><span class="label">Avg CLV</span><span class="value mono">+0.03</span><div class="note">pts vs. closing line</div></div><div class="stat-cell"><span class="label">Hook losses</span><span class="value mono">9</span><div class="note">decided by half a point</div></div></div>
   </section>
 
   <footer>

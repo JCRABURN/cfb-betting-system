@@ -70,6 +70,19 @@ jobs:
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
         run: python data/fetch_odds.py
 
+      - name: Refresh learning picks against the latest line
+        # The learning lane follows the market until kickoff (ARCHITECTURE.md
+        # §32): re-running the card after each pull re-derives every PENDING,
+        # not-yet-started pick against the freshest pre-game line. Before
+        # this, only the Tuesday report did, so by Saturday up to 65% of a
+        # week's tracked picks were stale. Never touches settled or
+        # already-kicked-off picks. Non-fatal: a failure here must not block
+        # the line snapshot, drift views, or dashboard below.
+        if: always() && steps.tests.outcome == 'success'
+        env:
+          CFBD_API_KEY: ${{ secrets.CFBD_API_KEY }}
+        run: python models/card_generator.py
+
       - name: Market movement view
         if: always() && steps.tests.outcome == 'success'
         env:

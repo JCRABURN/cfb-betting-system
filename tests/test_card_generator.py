@@ -557,7 +557,7 @@ def test_no_pick_extrapolation_updates_a_pending_pick_from_an_earlier_run(temp_d
     build_training_fixture(conn)
     insert_stats(conn, 2022, 15, "E", 0.50, 0.0)
     insert_stats(conn, 2022, 15, "F", -0.30, 0.0)
-    insert_game(conn, 10, 2023, 1, "E", "F", completed=0)
+    insert_game(conn, 10, 2023, 1, "E", "F", completed=0, start_date="2099-01-01T00:00:00.000Z")
     insert_line(conn, 10, 2023, 1, "E", "F", home_spread=-13.0, line_type="current")
     conn.commit()
 
@@ -611,3 +611,74 @@ def test_no_pick_extrapolation_never_updates_a_settled_pick(temp_db):
     assert rows_added == 0
     assert rows_updated == 0
     assert stored == ("settled", "win", 1)  # untouched, even though it'd now classify as no_pick_extrapolation
+
+
+# ---------------------------------------------------------------------------
+# Learning lane follows the market until kickoff (2026-10-14)
+# ---------------------------------------------------------------------------
+
+def _two_week5_cards(conn, new_spread, start_date):
+    """Persist a pending pick at -13.0, then move the line to new_spread and
+    persist again. Returns (rows_added, rows_updated) of the SECOND run."""
+    build_training_fixture(conn)
+    insert_stats(conn, 2023, 4, "E", 0.30, 0.0)
+    insert_stats(conn, 2023, 4, "F", 0.00, 0.0)
+    insert_game(conn, 10, 2023, 5, "E", "F", completed=0, start_date=start_date)
+    insert_line(conn, 10, 2023, 5, "E", "F", home_spread=-13.0, line_type="current")
+    conn.commit()
+    cg.persist_picks_to_db(conn, cg.build_card(conn, 2023, 5))
+
+    conn.execute("UPDATE betting_lines SET home_spread = ? WHERE game_id = 10", (new_spread,))
+    conn.commit()
+    return cg.persist_picks_to_db(conn, cg.build_card(conn, 2023, 5))
+
+
+def test_pending_pick_follows_the_line_before_kickoff(temp_db):
+    conn = temp_db.get_connection()
+    added, updated = _two_week5_cards(conn, -9.0, start_date="2099-01-01T00:00:00.000Z")
+    row = conn.execute("SELECT consensus_spread FROM picks WHERE game_id = 10").fetchone()
+    conn.close()
+    assert (added, updated) == (0, 1)
+    assert row == (-9.0,)
+
+
+def test_pending_pick_freezes_once_the_game_has_kicked_off(temp_db):
+    conn = temp_db.get_connection()
+    added, updated = _two_week5_cards(conn, -9.0, start_date="2020-01-01T00:00:00.000Z")
+    row = conn.execute("SELECT consensus_spread FROM picks WHERE game_id = 10").fetchone()
+    conn.close()
+    assert (added, updated) == (0, 0)
+    assert row == (-13.0,)          # still the pre-kickoff number
+
+
+def test_first_seen_line_is_recorded_and_survives_following_the_market(temp_db):
+    import json
+    conn = temp_db.get_connection()
+    _two_week5_cards(conn, -9.0, start_date="2099-01-01T00:00:00.000Z")
+    lm = conn.execute("SELECT line_movement FROM picks WHERE game_id = 10").fetchone()[0]
+    conn.close()
+    assert json.loads(lm)["first_spread"] == -13.0   # original number kept; consensus_spread moved to -9.0
+
+
+def test_first_seen_line_backfilled_for_rows_created_before_it_existed(temp_db):
+    """Pre-2026-10-14 rows have line_movement NULL and a frozen
+    consensus_spread. The first time they are updated, that frozen value
+    must be captured as first_spread before being overwritten."""
+    import json
+    conn = temp_db.get_connection()
+    build_training_fixture(conn)
+    insert_stats(conn, 2023, 4, "E", 0.30, 0.0)
+    insert_stats(conn, 2023, 4, "F", 0.00, 0.0)
+    insert_game(conn, 10, 2023, 5, "E", "F", completed=0, start_date="2099-01-01T00:00:00.000Z")
+    insert_line(conn, 10, 2023, 5, "E", "F", home_spread=-9.0, line_type="current")
+    conn.execute(
+        "INSERT INTO picks (game_id, week, year, home_team, away_team, consensus_spread, edge, "
+        "recommended_side, confidence_signals, qualifies, status, pick_type, created_at) "
+        "VALUES (10, 5, 2023, 'E', 'F', -13.0, 1.0, 'E', '[\"standard\"]', 1, 'pending', 'live', 'earlier')"
+    )
+    conn.commit()
+    cg.persist_picks_to_db(conn, cg.build_card(conn, 2023, 5))
+    row = conn.execute("SELECT consensus_spread, line_movement FROM picks WHERE game_id = 10").fetchone()
+    conn.close()
+    assert row[0] == -9.0
+    assert json.loads(row[1])["first_spread"] == -13.0
