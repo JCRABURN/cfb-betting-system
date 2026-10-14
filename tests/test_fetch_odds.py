@@ -4,6 +4,7 @@ SCHOOLS = [
     "TCU", "USC", "NC State", "Ohio", "Ohio State", "Miami", "Miami (OH)",
     "Albany", "Georgia", "Texas", "Hawai'i", "Massachusetts", "Southern Miss",
     "App State", "San José State", "UL Monroe",
+    "Florida International", "Florida Atlantic",
 ]
 
 
@@ -155,3 +156,13 @@ def test_filter_by_week_mixed_slate_keeps_only_the_current_week():
     result = filter_by_week(games, WEEK1_START, WEEK1_END)
     assert len(result) == 1
     assert result[0]["home_team"] == "TCU"
+
+
+def test_alias_resolves_pool_sheet_abbreviations():
+    # Found ingesting the real Week 7 2026 slate: 3 of 59 games failed to
+    # resolve because the sheet used FIU / FAU / ULM.
+    assert resolve_school_name(SCHOOLS, "FIU") == "Florida International"
+    assert resolve_school_name(SCHOOLS, "FAU") == "Florida Atlantic"
+    assert resolve_school_name(SCHOOLS, "ULM") == "UL Monroe"
+    # Full names must keep resolving unchanged.
+    assert resolve_school_name(SCHOOLS, "Florida Atlantic Owls") == "Florida Atlantic"

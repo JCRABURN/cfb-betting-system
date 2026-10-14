@@ -59,6 +59,10 @@ KNOWN_TEAM_ALIASES = {
     "Louisiana-Monroe": "UL Monroe",
     "Louisiana Monroe": "UL Monroe",
     "UL-Monroe": "UL Monroe",
+    # Abbreviations used by the user's SplashSports slate (Week 7, 2026).
+    "ULM": "UL Monroe",
+    "FIU": "Florida International",
+    "FAU": "Florida Atlantic",
 }
 
 

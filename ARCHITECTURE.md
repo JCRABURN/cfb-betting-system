@@ -1015,3 +1015,18 @@ Regression tests added in `test_post_game_audit.py` (gate blocks on a pending pi
 **Closed 2026-10-14: the point-in-time refresh now logs.** `refresh_point_in_time_stats_if_week_complete()` writes an `ingestion_runs` row (`source='cfbd_point_in_time'`, the name the manual CLI already used) when it actually fetches: `ok` -> success, `empty`/`failed` -> error. `skipped` (already ingested, the steady state) is deliberately not logged. Weeks 1-7 were already populated; only the visibility was missing.
 
 **Observed, recorded not fixed (same review).** NFL tables are empty in the committed DB (`nfl_games`, `nfl_team_stats`, NFL `betting_lines` all 0 rows, including at older commits): Phase 1 shipped code and source files, but the backfills were never loaded into the production DB, and live NFL odds are unscheduled and still unverified (§27). The pool feature remains dormant (3 demo rows, no slate ingested since Week 2) and totals are unbuilt (`MARKETS = "spreads"`). Both await a direction decision.
+
+## 31. NFL parked; pool workflow resumed with Week 7 (2026-10-14)
+
+**NFL: parked by decision, not abandoned.** Verified before parking that nothing NFL is on the scheduled or runtime path: no workflow references it, and the only NFL footprint in runtime modules is `db.py`'s schema (`nfl_games`, `nfl_team_stats`, and the `betting_lines.league` column, all empty or defaulted to `'cfb'`). So there is no code to remove and nothing to keep from breaking.
+
+What is left in place, deliberately: `data/nfl_*.py` ingestion scripts, the 15 committed SBR archive files (`data/nfl_historical_odds/`, ~700 KB), and §27's design. Not deleted, since deleting is harder to undo than leaving inert files.
+
+**State to know if NFL is resumed** (so it isn't rediscovered the hard way): (1) the production DB holds **0 NFL rows** — the Phase 1 backfills were verified in scratch but never loaded into the committed `cfb.db`; (2) `fetch_nfl_odds.py` is still unverified against a live Odds API response (§27's required gate); (3) the backtest harness was never built. Resuming means running the backfills, passing that live gate, then the harness, in that order.
+
+**Pool workflow resumed: Week 7 slate (59 games, xlsx, spreads + totals, no picks).**
+- 3 of 59 games initially failed to resolve: the sheet used **FIU / FAU / ULM**. Same alias-gap class as §28 item 1; added to `KNOWN_TEAM_ALIASES`, regression-tested. 59/59 resolve after.
+- The card lined 57/59; 2 have no live line yet (Nevada @ North Dakota State, Ohio @ Sacramento State). Confidence split 45 `standard` / 9 `low_confidence_large_edge` (the latter reported but not recommended, same rule as always).
+- Games already kicked off at ingest time (Tue Oct 13) are flagged `recommended_but_already_started` in the model-read CSV and excluded from the top 5, since a recommendation after kickoff isn't one.
+- Not ingested into `contest_entries`: the file carries no picks (its name says so), and `picked_side` is NOT NULL. Totals are present in the sheet and stored in the CSV (`pool_total`) but still not a modeled/first-class market (`MARKETS = "spreads"`).
+- The 3 Week 1 demo rows in `contest_entries` are still there; unchanged.
