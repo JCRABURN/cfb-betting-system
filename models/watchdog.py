@@ -30,7 +30,14 @@ API = "https://api.github.com"
 REPO = os.environ.get("GITHUB_REPOSITORY", "JCRABURN/cfb-betting-system")
 AUDIT_WORKFLOW = "post_game_audit.yml"
 PAGES_WORKFLOW_NAME = "pages-build-deployment"
-AUDIT_GRACE_HOURS = 10  # observed cron delay ran up to 8.5h; 10h leaves margin
+# Was 10h (2026-10-06), sized above the worst observed cron delay (8.5h) so
+# the watchdog would never preempt a late-but-coming cron. Revised to 5h
+# (2026-10-14) once two things were measured: the audit cron kept drifting
+# (9.1h on Oct 12) and the watchdog's OWN cron polls at a median 7.5h, not
+# 3h -- so a 10h grace meant a dropped audit could sit ~17h+ before rescue.
+# A preempting dispatch is harmless (the audit is idempotent), so erring
+# early costs a no-op second run, while erring late costs a stale dashboard.
+AUDIT_GRACE_HOURS = 5
 
 
 def parse_utc(ts):

@@ -302,6 +302,79 @@ def test_refresh_point_in_time_stats_runs_once_week_is_fully_graded(temp_db, mon
     assert row == (0.2,)
 
 
+def _pit_runs(conn):
+    return conn.execute(
+        "SELECT source, status, rows_added, error FROM ingestion_runs WHERE source = 'cfbd_point_in_time'"
+    ).fetchall()
+
+
+def test_refresh_point_in_time_logs_success_run(temp_db, monkeypatch):
+    """Added 2026-10-14: the refresh worked for weeks but wrote nothing to
+    ingestion_runs, so its weekly success was invisible in the run history."""
+    conn = temp_db.get_connection()
+    insert_game(conn, 1, 2026, 1, "A", "B", home_pts=30, away_pts=10, completed=1)
+    insert_pick(conn, 1, 1, 2026, "A", "B", spread=-3.0, side="A", status="settled")
+    conn.commit()
+    monkeypatch.setattr(
+        pga.pit, "fetch_point_in_time_stats",
+        lambda year, week: [{"team": "A", "offense": {"ppa": 0.2, "successRate": 0.5},
+                              "defense": {"ppa": -0.1, "successRate": 0.4, "havoc": {"total": 0.15}}}],
+    )
+
+    pga.refresh_point_in_time_stats_if_week_complete(conn, 2026, 1)
+    runs = _pit_runs(conn)
+    conn.close()
+
+    assert runs == [("cfbd_point_in_time", "success", 1, None)]
+
+
+def test_refresh_point_in_time_does_not_log_when_already_ingested(temp_db, monkeypatch):
+    """'skipped' is the steady state on every later audit -- logging it
+    would add a noise row per week per audit run."""
+    conn = temp_db.get_connection()
+    insert_game(conn, 1, 2026, 1, "A", "B", home_pts=30, away_pts=10, completed=1)
+    insert_pick(conn, 1, 1, 2026, "A", "B", spread=-3.0, side="A", status="settled")
+    conn.commit()
+    monkeypatch.setattr(
+        pga.pit, "fetch_point_in_time_stats",
+        lambda year, week: [{"team": "A", "offense": {}, "defense": {}}],
+    )
+
+    pga.refresh_point_in_time_stats_if_week_complete(conn, 2026, 1)  # ingests + logs
+    second = pga.refresh_point_in_time_stats_if_week_complete(conn, 2026, 1)  # skipped
+    runs = _pit_runs(conn)
+    conn.close()
+
+    assert second == (0, "skipped")
+    assert len(runs) == 1
+
+
+def test_refresh_point_in_time_logs_error_run_when_fetch_fails(temp_db, monkeypatch):
+    conn = temp_db.get_connection()
+    monkeypatch.setattr(pga.pit, "fetch_point_in_time_stats", lambda year, week: None)
+
+    result = pga.refresh_point_in_time_stats_if_week_complete(conn, 2026, 1)
+    runs = _pit_runs(conn)
+    conn.close()
+
+    assert result == (0, "failed")
+    assert len(runs) == 1
+    assert runs[0][0:2] == ("cfbd_point_in_time", "error")
+    assert "failed" in runs[0][3]
+
+
+def test_refresh_point_in_time_does_not_log_while_week_incomplete(temp_db, monkeypatch):
+    conn = temp_db.get_connection()
+    insert_game(conn, 1, 2026, 1, "A", "B")
+    insert_pick(conn, 1, 1, 2026, "A", "B", spread=-3.0, side="A", status="pending")
+    conn.commit()
+    monkeypatch.setattr(pga.pit, "fetch_point_in_time_stats", lambda y, w: [])
+
+    assert pga.refresh_point_in_time_stats_if_week_complete(conn, 2026, 1) is None
+    assert _pit_runs(conn) == []
+    conn.close()
+
+
 def test_refresh_point_in_time_stats_no_pending_at_all_still_runs(temp_db, monkeypatch):
     """A week with zero picks ever recorded (e.g. nothing lined that week)
     is not the same as "still in progress" -- it should still get its

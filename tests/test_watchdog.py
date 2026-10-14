@@ -73,3 +73,22 @@ def test_pages_does_not_touch_in_progress_deploy():
 
 def test_pages_no_runs_is_noop():
     assert wd.pages_run_to_rerun([]) is None
+
+
+def test_dispatch_threshold_tracks_the_grace_constant():
+    """Boundary tied to AUDIT_GRACE_HOURS itself, so retuning it can't
+    silently leave the tests asserting the old window."""
+    from datetime import timedelta
+    slot = utc(2026, 10, 5, 11, 0)
+    last = utc(2026, 9, 28, 19, 0)  # prior week's success
+    just_inside = slot + timedelta(hours=wd.AUDIT_GRACE_HOURS) - timedelta(minutes=1)
+    just_past = slot + timedelta(hours=wd.AUDIT_GRACE_HOURS)
+    assert wd.should_dispatch_audit(just_inside, last, 0) is False
+    assert wd.should_dispatch_audit(just_past, last, 0) is True
+
+
+def test_grace_is_tighter_than_worst_observed_cron_drift():
+    """Regression for the 10h -> 5h revision: the watchdog's own polling
+    runs at a ~7.5h median, so a grace window above the observed audit
+    drift (9.1h) would let a dropped audit sit stale for most of a day."""
+    assert wd.AUDIT_GRACE_HOURS <= 6

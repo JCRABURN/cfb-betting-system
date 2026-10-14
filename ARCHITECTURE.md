@@ -1006,4 +1006,12 @@ Regression tests added in `test_post_game_audit.py` (gate blocks on a pending pi
 
 **Decision logic is pure and tested** (`tests/test_watchdog.py`, 14 tests covering slot computation, grace window, already-succeeded, already-active, and the Pages rerun rules). The workflow needs `actions: write`; it uses only the built-in `GITHUB_TOKEN`, no new secret. Without a token, `python models/watchdog.py` runs as a read-only dry run against the public API.
 
-**Still open, recorded not fixed.** The point-in-time refresh (§29) still doesn't write an `ingestion_runs` row, so its weekly success isn't visible in the logs. The watchdog doesn't cover this.
+**Revised 2026-10-14 after eight days of live data.** Two measurements changed the tuning:
+- The watchdog's own cron does not fire every 3h. Over Oct 6-14, 26 runs landed at a **median gap of 7.5h (max 10.5h)** against the 3h schedule: it rides the same scheduler it is watching. The audit cron kept drifting too (+9.1h on Oct 12, up from +8.5h).
+- With a 10h grace and ~7.5h polling, a genuinely dropped audit could sit ~17h+ before rescue. So grace is now **5h** (`AUDIT_GRACE_HOURS`), and the workflow has a **second staggered cron** (`47 1,4,7,...`) so at least one poll is more likely to land. Erring early is cheap (a preempting dispatch is a no-op second run because the audit is idempotent); erring late is a stale dashboard.
+- Expect the watchdog to *preempt* the cron most weeks now. That is intended; the late cron then runs as a harmless no-op.
+- **Not solved:** both the audit and the watchdog ride GitHub's scheduler, so this narrows the window rather than removing the dependency. A true fix is an external trigger calling `workflow_dispatch`, which needs a stored token.
+
+**Closed 2026-10-14: the point-in-time refresh now logs.** `refresh_point_in_time_stats_if_week_complete()` writes an `ingestion_runs` row (`source='cfbd_point_in_time'`, the name the manual CLI already used) when it actually fetches: `ok` -> success, `empty`/`failed` -> error. `skipped` (already ingested, the steady state) is deliberately not logged. Weeks 1-7 were already populated; only the visibility was missing.
+
+**Observed, recorded not fixed (same review).** NFL tables are empty in the committed DB (`nfl_games`, `nfl_team_stats`, NFL `betting_lines` all 0 rows, including at older commits): Phase 1 shipped code and source files, but the backfills were never loaded into the production DB, and live NFL odds are unscheduled and still unverified (§27). The pool feature remains dormant (3 demo rows, no slate ingested since Week 2) and totals are unbuilt (`MARKETS = "spreads"`). Both await a direction decision.

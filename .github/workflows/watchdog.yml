@@ -1,12 +1,17 @@
 name: Watchdog
 
-# Self-healing for the scheduled pipeline (ARCHITECTURE.md §30). Runs every
-# 3 hours so a late or dropped Monday audit cron gets dispatched manually
-# (after a 10h grace window), and a failed GitHub Pages deploy gets re-run.
-# Does nothing when everything is healthy.
+# Self-healing for the scheduled pipeline (ARCHITECTURE.md §30). Polls so a
+# late or dropped Monday audit cron gets dispatched manually (after a 5h
+# grace window), and a failed GitHub Pages deploy gets re-run. Does nothing
+# when everything is healthy.
+#
+# Two staggered crons, not one: measured over Oct 6-14, a single '*/3' cron
+# actually fired at a median 7.5h gap (GitHub drops/delays scheduled runs),
+# so a second offset schedule raises the odds that at least one lands.
 on:
   schedule:
     - cron: '17 */3 * * *'
+    - cron: '47 1,4,7,10,13,16,19,22 * * *'
   workflow_dispatch:
 
 permissions:

@@ -54,6 +54,7 @@ import os
 import sys
 import json
 import requests
+from datetime import datetime
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _ROOT)
@@ -160,7 +161,14 @@ def refresh_point_in_time_stats_if_week_complete(conn, season, week):
     automatically afterward.
 
     Returns None if `week` still has a pending pick (not run), else
-    backfill_week()'s own (rows_added, status)."""
+    backfill_week()'s own (rows_added, status).
+
+    Logs an `ingestion_runs` row (source='cfbd_point_in_time', same name the
+    manual CLI uses) whenever it actually fetched: 'ok' -> success, 'empty'
+    or 'failed' -> error. 'skipped' (week already ingested -- the steady
+    state on every later audit) is NOT logged, which would be noise. Before
+    2026-10-14 this step wrote nothing, so its weekly success was invisible
+    in the run history (ARCHITECTURE.md §29/§30)."""
     still_pending = conn.execute(
         "SELECT COUNT(*) FROM picks WHERE year = ? AND week = ? AND pick_type = 'live' "
         "AND status = 'pending'",
@@ -168,7 +176,21 @@ def refresh_point_in_time_stats_if_week_complete(conn, season, week):
     ).fetchone()[0]
     if still_pending > 0:
         return None
-    return pit.backfill_week(conn, season, week)
+
+    started_at = datetime.utcnow().isoformat()
+    rows_added, status = pit.backfill_week(conn, season, week)
+    if status != "skipped":
+        error = None if status == "ok" else (
+            f"{season} week {week}: point-in-time refresh returned {status!r}"
+        )
+        conn.execute(
+            "INSERT INTO ingestion_runs (source, started_at, finished_at, rows_added, status, error) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (pit.SOURCE, started_at, datetime.utcnow().isoformat(), rows_added,
+             "success" if status == "ok" else "error", error),
+        )
+        conn.commit()
+    return rows_added, status
 
 
 def grade_pending_picks(conn, season, week):
