@@ -394,6 +394,16 @@ _ADDED_COLUMNS = {
         ("offense_success_rate", "REAL"),
         ("defense_success_rate", "REAL"),
         ("havoc_rate", "REAL"),
+        # Pace (2026-10-14). CUMULATIVE-through-week counts straight from the
+        # same /stats/season/advanced response that already supplied EPA, which
+        # returned them all along and had them discarded. Per-game figures are
+        # derived at read time from games_played (backtest_harness.
+        # get_pace_as_of); raw counts are stored, never a pre-divided rate.
+        ("offense_plays", "INTEGER"),
+        ("defense_plays", "INTEGER"),
+        ("offense_drives", "INTEGER"),
+        ("defense_drives", "INTEGER"),
+        ("games_played", "INTEGER"),
     ],
     "contest_entries": [
         ("rank", "INTEGER"),

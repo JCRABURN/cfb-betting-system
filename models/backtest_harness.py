@@ -85,6 +85,46 @@ def get_team_stats_as_of(conn, team, season, week):
     }
 
 
+def get_pace_as_of(conn, team, season, week):
+    """Pace from the most recent point-in-time snapshot strictly BEFORE
+    `week` (same lookahead rule as get_team_stats_as_of). Returns None if no
+    snapshot with pace exists -- never a guess. Per-game figures are derived
+    here from stored cumulative counts and games_played:
+
+      plays_per_game    own offensive plays / game (tempo: how often THIS
+                        team's offense runs a play)
+      game_plays_per_game  (offense + defense plays) / game -- plays in this
+                        team's games, the quantity that drives a total
+      drives_per_game   own offensive drives / game
+      plays_per_drive   own offensive plays / drive
+
+    A snapshot with games_played of 0/NULL returns None (a bye-only or
+    not-yet-backfilled row has no meaningful rate)."""
+    row = conn.execute(
+        """
+        SELECT offense_plays, defense_plays, offense_drives, defense_drives, games_played, week
+        FROM team_game_stats
+        WHERE source = 'cfbd_point_in_time' AND team = ? AND season = ? AND week < ?
+          AND offense_plays IS NOT NULL AND games_played IS NOT NULL
+        ORDER BY week DESC
+        LIMIT 1
+        """,
+        (team, season, week),
+    ).fetchone()
+    if row is None or not row[4]:
+        return None
+    off_p, def_p, off_d, def_d, gp, as_of = row
+    return {
+        "plays_per_game": off_p / gp,
+        "game_plays_per_game": (off_p + (def_p or 0)) / gp,
+        "drives_per_game": (off_d / gp) if off_d is not None else None,
+        "plays_per_drive": (off_p / off_d) if off_d else None,
+        "games_played": gp,
+        "as_of_week": as_of,
+        "as_of_season": season,
+    }
+
+
 def get_prior_season_final_stats(conn, team, season):
     """Week 1's deliberate fallback input, per MODEL_DESIGN.md §6's build-time
     decision: "prior season's final EPA as a rough prior... current lean,

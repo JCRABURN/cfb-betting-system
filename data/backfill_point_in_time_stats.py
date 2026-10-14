@@ -136,8 +136,9 @@ def backfill_week(conn, year, week, force=False):
                 game_id, season, week, team, sp_rating,
                 offense_epa_play, defense_epa_play,
                 offense_success_rate, defense_success_rate, havoc_rate,
-                wins, losses, source, fetched_at
-            ) VALUES (NULL, ?, ?, ?, NULL, ?, ?, ?, ?, ?, NULL, NULL, ?, ?)
+                wins, losses, source, fetched_at,
+                offense_plays, defense_plays, offense_drives, defense_drives
+            ) VALUES (NULL, ?, ?, ?, NULL, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?)
             """,
             (
                 year, week, team,
@@ -145,6 +146,8 @@ def backfill_week(conn, year, week, force=False):
                 offense.get("successRate"), defense.get("successRate"),
                 defense.get("havoc", {}).get("total"),
                 SOURCE, now,
+                offense.get("plays"), defense.get("plays"),
+                offense.get("drives"), defense.get("drives"),
             ),
         )
         rows_added += 1
@@ -154,6 +157,159 @@ def backfill_week(conn, year, week, force=False):
     return rows_added, "ok"
 
 
+def fetch_season_games(year):
+    """Every FBS game for `year`'s regular season, from CFBD's own /games.
+    Returns the list, or None if every retry failed (callers leave
+    games_played NULL rather than guess).
+
+    Games-played MUST come from here and not from our `games` table: that
+    table only holds games that had betting lines, and FBS-vs-FCS games
+    mostly don't. Verified live 2026-10-14 against 2025: CFBD 888 completed
+    games vs. our 761, Alabama 13 vs. 12 -- normalizing plays by our count
+    would inflate pace for every team that plays an FCS opponent."""
+    for attempt in range(MAX_RETRIES):
+        try:
+            resp = fetch_stats.requests.get(
+                f"{CFBD_BASE}/games", headers=HEADERS,
+                params={"year": year, "classification": "fbs", "seasonType": "regular"},
+                timeout=60,
+            )
+            if resp.status_code == 429:
+                time.sleep(BASE_BACKOFF_SECONDS * (2 ** attempt))
+                continue
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as e:
+            print(f"{year} /games: request failed ({e}), retry {attempt + 1}/{MAX_RETRIES}")
+            time.sleep(BASE_BACKOFF_SECONDS * (2 ** attempt))
+    return None
+
+
+def games_played_by_team(games, end_week):
+    """{team: number of COMPLETED games with week <= end_week}. Pure.
+    Mirrors the cutoff of /stats/season/advanced?endWeek=N, so numerator
+    (plays through N) and denominator (games through N) cover the same games."""
+    counts = {}
+    for g in games or []:
+        if not g.get("completed") or g.get("week") is None or g["week"] > end_week:
+            continue
+        for side in ("homeTeam", "awayTeam"):
+            team = g.get(side)
+            if team:
+                counts[team] = counts.get(team, 0) + 1
+    return counts
+
+
+def backfill_pace_week(conn, year, week, games=None):
+    """Fill pace columns (plays/drives/games_played) on EXISTING
+    cfbd_point_in_time rows for (year, week), leaving every other column --
+    the EPA/success/havoc values already relied on by the backtest --
+    exactly as stored. Idempotent: rows that already have pace are skipped
+    with zero API calls.
+
+    Returns (rows_updated, status): 'skipped' (nothing missing), 'ok',
+    'failed' (advanced-stats fetch gave up), or 'no_games' (rows updated
+    with plays/drives but /games was unavailable, so games_played stays
+    NULL -- never guessed). `ppa_mismatch` rows are reported via print: the
+    re-fetched EPA differing from the stored EPA means CFBD has revised
+    history since the original snapshot, in which case the pace snapshot is
+    from a slightly different data vintage than the EPA beside it."""
+    missing = conn.execute(
+        "SELECT COUNT(*) FROM team_game_stats WHERE season = ? AND week = ? AND source = ? "
+        "AND (offense_plays IS NULL OR games_played IS NULL)",
+        (year, week, SOURCE),
+    ).fetchone()[0]
+    if missing == 0:
+        return 0, "skipped"
+
+    need_stats = conn.execute(
+        "SELECT COUNT(*) FROM team_game_stats WHERE season = ? AND week = ? AND source = ? "
+        "AND offense_plays IS NULL", (year, week, SOURCE),
+    ).fetchone()[0] > 0
+
+    by_team = {}
+    if need_stats:
+        teams = fetch_point_in_time_stats(year, week)
+        if teams is None:
+            return 0, "failed"
+        by_team = {t.get("team"): t for t in teams if t.get("team")}
+
+    gp = games_played_by_team(games, week) if games else {}
+
+    rows = conn.execute(
+        "SELECT id, team, offense_plays, offense_epa_play FROM team_game_stats "
+        "WHERE season = ? AND week = ? AND source = ?", (year, week, SOURCE),
+    ).fetchall()
+    updated = 0
+    mismatches = 0
+    for row_id, team, have_plays, stored_epa in rows:
+        sets, params = [], []
+        if have_plays is None:
+            t = by_team.get(team)
+            if t is None:
+                continue
+            off, de = t.get("offense", {}), t.get("defense", {})
+            sets += ["offense_plays = ?", "defense_plays = ?", "offense_drives = ?", "defense_drives = ?"]
+            params += [off.get("plays"), de.get("plays"), off.get("drives"), de.get("drives")]
+            if stored_epa is not None and off.get("ppa") is not None and abs(off["ppa"] - stored_epa) > 1e-6:
+                mismatches += 1
+        if team in gp:
+            sets.append("games_played = ?")
+            params.append(gp[team])
+        if not sets:
+            continue
+        conn.execute(f"UPDATE team_game_stats SET {', '.join(sets)} WHERE id = ?", params + [row_id])
+        updated += 1
+    conn.commit()
+    if mismatches:
+        print(f"{year} week {week}: {mismatches} team(s) have EPA that differs from the stored snapshot "
+              f"(CFBD revised history) -- pace is from today's vintage, EPA beside it from the original.")
+    return updated, ("ok" if gp else "no_games")
+
+
+def fill_games_played(conn, year, week):
+    """Live-path helper: fill games_played for a week whose rows were just
+    inserted by backfill_week() (which already captured plays/drives from the
+    same response). One /games request. Safe to call when already filled."""
+    games = fetch_season_games(year)
+    if games is None:
+        return 0, "no_games"
+    return backfill_pace_week(conn, year, week, games=games)
+
+
+def main_pace(args):
+    """CLI: python data/backfill_point_in_time_stats.py --pace --start-year 2019 --end-year 2026"""
+    failed, no_games = [], []
+    with db.log_run("cfbd_pace") as run:
+        conn = db.get_connection()
+        try:
+            total = 0
+            for year in range(args.start_year, args.end_year + 1):
+                games = fetch_season_games(year)
+                if games is None:
+                    print(f"{year}: /games unavailable after retries -- skipping season")
+                    failed.append((year, "games"))
+                    continue
+                for week in range(args.start_week, args.end_week + 1):
+                    n, status = backfill_pace_week(conn, year, week, games=games)
+                    total += n
+                    if status == "failed":
+                        failed.append((year, week))
+                    elif status == "no_games":
+                        no_games.append((year, week))
+                    if status != "skipped":
+                        print(f"{year} week {week}: {n} rows ({status})")
+                        time.sleep(0.5)
+            run["rows_added"] = total
+        finally:
+            conn.close()
+    print(f"\nDone. {run['rows_added']} rows updated.")
+    if failed:
+        print("FAILED (re-run to retry just these):", failed)
+    if no_games:
+        print("games_played unavailable for:", no_games)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--start-year", type=int, default=2019)
@@ -161,7 +317,11 @@ def main():
     parser.add_argument("--start-week", type=int, default=1)
     parser.add_argument("--end-week", type=int, default=15)
     parser.add_argument("--force", action="store_true", help="Re-fetch weeks already ingested")
+    parser.add_argument("--pace", action="store_true",
+                         help="Fill plays/drives/games_played on already-ingested rows only (no EPA changes)")
     args = parser.parse_args()
+    if args.pace:
+        return main_pace(args)
 
     empty_weeks = []
     failed_weeks = []

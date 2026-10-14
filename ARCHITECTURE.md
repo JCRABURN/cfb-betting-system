@@ -1090,3 +1090,59 @@ No totals **model** and no totals-based recommendation yet. Totals appear only a
 - The totals feed is **unverified against a live Odds API response from this machine** (the host is blocked locally); the first real test is the next Actions pull. The parser is covered by fixtures, and the spread path is isolated from it.
 - The market-move signal tested on 2021-2025 (betting the direction a line moved, graded against the stale opening number: 56-61% on moves >= 2 pts) is real, but pool lines are rarely stale: only 0-4 games/week differ from our market by >= 2 pts. It can fill a slot or two, not a top 5.
 - Pulls happen Tue/Thu/Sat, so "follows the market" means three refreshes a week, not continuous.
+
+## 33. Pace data (plays and drives); pace alone carries no information the market hasn't priced; CFBD's EPA is not a fixed vintage (2026-10-14)
+
+### What was done
+
+CFBD's `/stats/season/advanced` returns `plays` and `drives` for offense and defense in the same response that already supplied EPA/success/havoc. The weekly path and the historical backfill had been discarding them. They are now stored, and per-game pace is derivable.
+
+- **Columns** on `team_game_stats` (`_ADDED_COLUMNS`, auto-migrated): `offense_plays`, `defense_plays`, `offense_drives`, `defense_drives`, `games_played`. Raw cumulative-through-week counts; never a pre-divided rate.
+- **`games_played` comes from CFBD `/games`, not our `games` table.** Verified live (2025): CFBD has 888 completed FBS games, our table 761, because the local table only holds games that had betting lines and FBS-vs-FCS games mostly don't (Alabama: 13 vs 12). Normalizing by our count would have inflated pace for every team that plays an FCS opponent.
+- **Backfill:** `python data/backfill_point_in_time_stats.py --pace --start-year 2019 --end-year 2026`. Fills only the five new columns on existing rows; EPA/success/havoc are never touched. Idempotent, zero API calls for complete weeks. Ran for 2019-2026: 14,256 rows, 8 minutes, no rate limiting.
+- **Live path:** `backfill_week()` captures plays/drives at insert; `post_game_audit.refresh_point_in_time_stats_if_week_complete()` then calls `fill_games_played()` (one `/games` request). A failure there leaves `games_played` NULL and never blocks the EPA snapshot.
+- **Accessor:** `backtest_harness.get_pace_as_of(conn, team, season, week)`: strictly-before-week (same lookahead rule as `get_team_stats_as_of`), returns `plays_per_game`, `game_plays_per_game`, `drives_per_game`, `plays_per_drive`, or None. None when `games_played` is missing; never a guess.
+- **Tests:** a conftest autouse fixture makes `fetch_season_games` return None in every test so none can reach the live endpoint by accident.
+
+### Validation
+
+- Coverage 100% of `cfbd_point_in_time` rows (2020 is 99%: 13 New Mexico State rows, a partial pandemic-year season CFBD's `/games` doesn't list, correctly left NULL).
+- Plausibility: 60-63 offensive plays/game and ~11 drives/game at week 15, stable 2019-2025 (garbage time excluded, so below raw ~70).
+- Cumulative plays never decrease week over week (0 violations); no row has plays without drives.
+- 239 rows have `games_played > week`. Correct, not a bug: CFBD labels Week-0 games as week 1 (Charlotte 2022 played Aug 27 and Sep 2, both "week 1"). Numerator and denominator use the same label; checked: mean plays/game is 58.2 for these rows and 58.2 for the rest (a mismatch would show ~half).
+
+### The result that matters: pace alone has no incremental signal
+
+2021-2025, week >= 4, both teams >= 3 games, opening total available, n = 4,462; pace = home + away offensive plays/game as of the prior week, centered within season:
+
+| | correlation |
+|---|---|
+| pace vs actual total | +0.095 |
+| pace vs **opening** total | +0.223 |
+| pace vs (actual - opening) | **-0.000** (t = -0.02) |
+
+The market already prices pace in full. A one-sd pace gap (9.2 plays/game) is worth -0.00 points against 15.9 points of outcome noise. Stable by season (t between -0.6 and +1.4). **Raw tempo is not an edge**; if a totals model finds one it has to come from somewhere else (efficiency interacting with tempo, defense, weather, or the line-movement signal in section 32). This does not say pace is useless inside a model; it says it cannot be the reason a model beats the opening total.
+
+### Flagged, not fixed: CFBD's EPA is not a fixed vintage
+
+Found as a side effect of the backfill (it re-fetches each week and compares EPA to what is stored; it printed hundreds of mismatches). Measured, same (season, endWeek) call today vs. our stored snapshot:
+
+| snapshot | stored | median abs diff | share of teams differing >0.001 |
+|---|---|---|---|
+| 2019 wk 8 | 2026-07-30 | 0.054 | 100% |
+| 2023 wk 8 | 2026-07-30 | 0.059 | 100% |
+| 2025 wk 8 | 2026-07-30 | 0.052 | 100% |
+| 2026 wk 3 | 2026-09-14 | 0.088 | 100% |
+| 2026 wk 6 | 2026-10-05 | 0.022 | 81% |
+| 2026 wk 7 | 2026-10-12 | ~0 | 4 teams |
+
+What was ruled out: the garbage-time parameter (no variant matches stored), a week-indexing shift (no `endWeek` aligns), and non-determinism (two identical calls today are identical). The signal is the same (correlation across teams 0.983), but the level moved (mean -0.06) and dispersion grew ~13% (sd 0.107 -> 0.121).
+
+Inference, **not verified**: CFBD's PPA expected-points model is re-fit or recalibrated as data accrues, so snapshots are vintage-dependent: the most recently stored match today's output and older ones drift more.
+
+Implications:
+1. The regression is fit on the 2026-07-30 vintage while live inputs come from whatever vintage is current each week. A uniform level shift cancels in the home-minus-away differential the model uses; the ~13% scale difference does not, so live predicted margins are mildly over-scaled.
+2. Historical "as of week N" EPA was computed by a model that had already seen later data: a mild lookahead in the historical features. The backtests concluded "no edge", so this cannot have manufactured one, but it is a caveat on the precision of those numbers.
+3. Pace counts are play counts, not modeled values, so they should not drift like this. Unverified: no earlier vintage of pace exists to compare.
+
+Options if it needs resolving (decision deferred): re-snapshot all history under one vintage (`--force`, ~105 requests) and re-fit; and/or store a vintage tag with each snapshot. The `fetched_at` column already records when each was taken.

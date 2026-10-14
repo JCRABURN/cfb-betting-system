@@ -16,3 +16,12 @@ def temp_db(tmp_path, monkeypatch):
     monkeypatch.setattr(db, "DB_PATH", str(tmp_path / "test_cfb.db"))
     db.init_db()
     return db
+
+
+@pytest.fixture(autouse=True)
+def _no_live_cfbd_games(monkeypatch):
+    """backfill_point_in_time_stats.fetch_season_games() is a live CFBD call.
+    Default it to "unavailable" for every test so none can reach the network
+    by accident; tests of pace logic override it explicitly."""
+    import backfill_point_in_time_stats as pit
+    monkeypatch.setattr(pit, "fetch_season_games", lambda year: None)

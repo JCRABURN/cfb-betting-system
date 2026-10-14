@@ -222,6 +222,14 @@ def refresh_point_in_time_stats_if_week_complete(conn, season, week):
 
     started_at = datetime.utcnow().isoformat()
     rows_added, status = pit.backfill_week(conn, season, week)
+    if status == "ok":
+        # plays/drives arrived in the same response; games_played needs
+        # CFBD's /games (one request). A failure here leaves it NULL and
+        # never blocks the EPA snapshot.
+        try:
+            pit.fill_games_played(conn, season, week)
+        except Exception as e:
+            print(f"WARNING: games_played fill failed for {season} week {week}: {e}")
     if status != "skipped":
         error = None if status == "ok" else (
             f"{season} week {week}: point-in-time refresh returned {status!r}"
