@@ -83,6 +83,21 @@ jobs:
           CFBD_API_KEY: ${{ secrets.CFBD_API_KEY }}
         run: python models/card_generator.py
 
+      - name: Pool slate + stale-number signals
+        # Ingests any new week_{N}_{season}_splashsports_slate.* committed to
+        # data/pool_picks/raw/ (idempotent, immutable -- a differing re-send is
+        # reported as a conflict, never applied), then computes the gap
+        # between the pool's frozen Tuesday-noon numbers and the freshest
+        # PRE-KICKOFF market numbers just pulled (ARCHITECTURE.md section 34).
+        # No-ops cleanly when no slate has been committed. Non-fatal: must not
+        # block the line snapshot or the dashboard.
+        if: always() && steps.tests.outcome == 'success'
+        env:
+          CFBD_API_KEY: ${{ secrets.CFBD_API_KEY }}
+        run: |
+          python data/ingest_pool_slate.py
+          python models/move_signal.py
+
       - name: Market movement view
         if: always() && steps.tests.outcome == 'success'
         env:

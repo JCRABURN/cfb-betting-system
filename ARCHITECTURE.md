@@ -1170,3 +1170,30 @@ Walk-forward EPA-differential baseline, same harness and games, old vs new vinta
 - The first-seen/stored numbers no longer depend on which Wednesday a snapshot was taken.
 
 **What this does NOT fix, stated plainly:** the lookahead caveat in implication 2 above. A re-snapshot cannot make historical "as of week N" EPA free of an expected-points model that has seen later data; today's vintage has seen *more* of it (including 2026), not less. Nor does it freeze the vintage going forward: each new weekly snapshot is taken under whatever CFBD's model is that day, so drift between old and new weeks will re-accumulate. If the next re-fit looks off, check this first. The sound long-run mitigation is to compare each new snapshot against a re-fetch of an older week (the `--pace` backfill already prints this mismatch) and re-snapshot when it exceeds a tolerance, rather than assume stability.
+
+## 34. The stale-number tracker (2026-10-15)
+
+### What it is
+
+The pool freezes its lines Tuesday noon and picks are submitted afterward; the market keeps moving. When the market's number drifts from the pool's frozen number, the pool's number is mispriced by the gap, and the side the market moved toward is worth more than its price. No model is involved.
+
+- **Why this signal.** The 2021-2025 open->close test (section 32) graded against the stale opening number: 49-54% under 1pt, ~52% at 1-2, 56-57% at 2-3, 60-61% at 3+. That matches theory: outcomes scatter ~15.5 points around the market number (measured sd: spread 15.41, total 15.63), so a g-point gap is worth about Phi(g/15.5), ~57.6% at 3 points. Raw pace, the other candidate, was already fully priced (section 33).
+- **`pool_lines`** (new table, `data/ingest_pool_slate.py`): the pool's **full** slate of frozen spread and total for every game it lists, not just your picks. `contest_entries` only ever held picks, but the interesting games are the ones not yet picked. Immutable like `contest_entries`: a re-ingest with identical numbers is skipped; one with *different* numbers is reported as a conflict and **not applied** (a silent overwrite would corrupt every signal graded against it).
+- **Parser** detects the header row by name across the three real layouts (Week 1 xlsx with banner rows and extra columns, Week 7 xlsx, Week 2 csv). It asserts away spread == -home spread when both columns exist, so a sign-flipped sheet fails loudly instead of inverting every signal. Files are discovered by name `week_{N}_{season}_splashsports_slate.{csv|xlsx}` in `data/pool_picks/raw/`.
+- **`models/move_signal.py`**: for each slate game and market, the gap between the pool number and the latest **pre-kickoff** market number (the same kickoff-aware lookups as section 32, so an in-play price can't manufacture a gap), the side it favors, an estimated win probability, and a tier (`watch` >= 1.0, `strong` >= 2.0). Graded signals are scored against the **pool's** number, never the market's: a team can cover the pool's -3.5 and lose against the market's -6.0, and only the first is what the pool pays on.
+- **Derived, not stored:** signals are computed on demand from `pool_lines` + `betting_lines` snapshots. There is no observations table to drift out of sync with the in-play repair or the kickoff filter.
+- **Wiring:** a midweek-workflow step ingests any new slate file, then writes `data/line_views/move_signal_week_{N}_{season}.json`; the dashboard gains a "Stale Pool Numbers" panel (this week's candidates with the take at the pool number, status upcoming/started) and a graded table with Wilson 95% intervals.
+
+### Pre-registered reading rules (fixed before any live data)
+
+- **Primary:** `|gap| >= 2.0`, spread and total pooled, last pre-kickoff observation, one observation per (game, market).
+- **Do not act on the live record until n >= 60 decided AND the lower 95% bound exceeds 50%.** Enforced in code (`primary()["actionable_threshold_met"]`) and tested: 10-for-10 is *not* declared actionable; 45-25 over 70 is; 36-34 is not. The dashboard states "Not yet evidence" until then.
+
+### Honest expectations
+
+- **It will not reach decision-grade n this season.** Gaps >= 2 occur on roughly 1-4 games a week (weeks 1-2: 5 of 92; week 7 so far: none strong). At that rate the live record is ~20 signals by season end, far short of 60. The weekly list is therefore "backed by the 2021-2025 historical test", not "proven live". Its value this season is the actionable list and the slow accumulation, not a verdict.
+- **First readout (weeks 1-2 spreads, retrospective, n = 64 decided):** gap <1: 20-20; 1-2: 7-11 (39%, CI 20-61%); 2-3: 4-2. Nothing here distinguishes the signal from noise in either direction: the 1-2 bucket sits below the historical ~52% but well inside its interval.
+- **Week 7 now:** nothing strong and upcoming. The pool froze Tuesday noon and our last pull was Tuesday 9am CT, so gaps are near zero by construction; the first meaningful read is the Thursday pull. Two `watch` items (Rutgers @ Maryland, Washington State @ Oregon State; gap 1.0).
+- **Totals have no signals yet**: live totals began only with the 2026-10-14 feed change and none have landed. `totals_collected` in the report says so explicitly.
+- **Observation timing:** "latest pre-kickoff" is the last pull before the game (Tue/Thu/Sat), which is at or after the moment you pick; the gap you could actually *see* is whichever pull preceded your submission. The measured gap is therefore an upper-ish bound on what was capturable.
+- **Estimate, not promise:** `p_win_est` = Phi(|gap|/sigma). It ignores pushes and vig and assumes the market number is unbiased.

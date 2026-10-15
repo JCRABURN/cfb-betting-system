@@ -38,6 +38,7 @@ import fetch_stats
 import card_generator
 import gambling_view
 import pool_view
+import move_signal
 
 # How stale a checkpoint's last SUCCESSFUL run can be before it's flagged,
 # even without an explicit error -- catches "this simply never ran again"
@@ -317,6 +318,55 @@ def _totals_movement_rows(totals):
     return "\n".join(rows)
 
 
+def _stale_signal_rows(signals):
+    """Rows for the stale-pool-number table (models/move_signal.py). Only
+    still-upcoming games are actionable; a finished or started game's gap is
+    shown dimmed so the table doesn't silently lose a signal mid-week."""
+    if not signals or not signals.get("current"):
+        return None
+    rows = []
+    for g in signals["current"]:
+        status = "upcoming" if g["actionable"] else "started"
+        tier = f'<span class="pill {"toward" if g["tier"] == "strong" else "flat"}">{g["tier"]}</span>'
+        rows.append(
+            f'<tr><td class="matchup"><span class="away">{_esc(g["away_team"])}</span>'
+            f'<span class="at">@</span>{_esc(g["home_team"])}</td>'
+            f'<td>{_esc(g["market"])}</td>'
+            f'<td class="num mono">{g["pool_number"]:+.1f}</td>'
+            f'<td class="num mono">{g["market_number"]:+.1f}</td>'
+            f'<td class="num mono">{g["abs_gap"]:.1f}</td>'
+            f'<td><strong>{_esc(g["take"])}</strong> {tier}</td>'
+            f'<td class="num mono">{g["p_win_est"]:.0%}</td>'
+            f'<td class="mono">{status}</td></tr>'
+        )
+    return "\n".join(rows)
+
+
+def _stale_record_html(signals):
+    if not signals:
+        return ""
+    p = signals["primary"]
+    parts = []
+    for label in ("<1", "1-2", "2-3", ">=3"):
+        b = signals["record"]["all"][label]
+        if b["decided"]:
+            parts.append(f'<tr><td class="mono">{_esc(label)}</td><td class="num mono">{b["w"]}&ndash;{b["l"]}&ndash;{b["p"]}</td>'
+                         f'<td class="num mono">{b["hit"]:.0%}</td>'
+                         f'<td class="num mono">{b["lo"]:.0%}&ndash;{b["hi"]:.0%}</td></tr>')
+    table = (
+        '<div class="table-wrap"><table><thead><tr><th>Gap (pts)</th><th class="num">Record</th>'
+        '<th class="num">Hit</th><th class="num">95% range</th></tr></thead><tbody>'
+        + "".join(parts) + "</tbody></table></div>"
+    ) if parts else ""
+    verdict = (
+        "Meets the pre-registered bar." if p["actionable_threshold_met"] else
+        f'Not yet evidence: {p["w"] + p["l"]} decided at gap &ge; 2 (need {p["min_n_to_act"]} with the lower '
+        "bound above 50%)."
+    )
+    return f'<p class="dek"><strong>Graded so far</strong> (weeks {", ".join(str(w) for w in signals["weeks_in_record"])}; ' \
+           f'graded against the pool\'s own number). {verdict}</p>{table}'
+
+
 def _pool_ranking_rows(ranked):
     """External review's one accepted gap, closed this project's own way
     (2026-08-04): pool_view.rank_pool_picks() ranks the pool's OWN locked
@@ -452,7 +502,8 @@ def _prior_season_banner_html(card):
     )
 
 
-def render_dashboard(season, week, card, gambling, pool, ranked, ledger, healths, generated_at):
+def render_dashboard(season, week, card, gambling, pool, ranked, ledger, healths, generated_at,
+                     signals=None):
     # Literal "·" here, not the &middot; entity -- _health_chip_html() runs
     # day_label through _esc(), which would escape the entity's own "&"
     # into "&amp;middot;" and render literally instead of as a dot (the bug
@@ -481,6 +532,21 @@ def render_dashboard(season, week, card, gambling, pool, ranked, ledger, healths
             '<th>Pool line</th><th>Live line</th><th>Since you picked</th></tr></thead>'
             f"<tbody>{pool_rows}</tbody></table></div>"
         )
+
+    signal_rows = _stale_signal_rows(signals)
+    if signal_rows is None:
+        signal_body = (
+            '<div class="empty-state">No pool number differs from the market by 1.0 or more right now '
+            "&mdash; or this week's slate hasn't been ingested yet.</div>"
+        )
+    else:
+        signal_body = (
+            '<div class="table-wrap"><table><thead><tr><th>Game</th><th>Market</th><th>Pool #</th>'
+            '<th>Market now</th><th class="num">Gap</th><th>Take at the pool number</th>'
+            '<th class="num">Est. win</th><th>Status</th></tr></thead>'
+            f"<tbody>{signal_rows}</tbody></table></div>"
+        )
+    signal_body += _stale_record_html(signals)
 
     ranking_rows = _pool_ranking_rows(ranked)
     if ranking_rows is None:
@@ -582,6 +648,15 @@ def render_dashboard(season, week, card, gambling, pool, ranked, ledger, healths
 
   <section class="panel">
     <div class="panel-head">
+      <div><div class="eyebrow headline">Headline &middot; Your Pool</div><h2 class="display">Stale Pool Numbers</h2></div>
+      <div class="asof mono">frozen pool number vs. market now &middot; no model</div>
+    </div>
+    <p class="dek">The pool froze its lines Tuesday noon; the market has kept moving. Where the two differ, the pool's number is mispriced by the gap and the side the market moved toward is worth more than its price. Estimated win % is a theoretical figure (outcomes scatter ~15.5 pts around the market number), not a track record &mdash; see the graded table below it.</p>
+    {signal_body}
+  </section>
+
+  <section class="panel">
+    <div class="panel-head">
       <div><div class="eyebrow headline">Headline &middot; Your Pool</div><h2 class="display">Ranked Pool Picks</h2></div>
       <div class="asof mono">drift confirmation, edge as tiebreak only</div>
     </div>
@@ -651,6 +726,7 @@ def main():
             if entries:
                 pool, _ = _try_build("pool_view", pool_view.build_pool_view, conn, entries)
             ranked = pool_view.rank_pool_picks(pool, card) if pool else None
+            signals, _ = _try_build("move_signal", move_signal.build_report, conn, season, week)
 
             ledger = build_season_ledger(conn, season)
         finally:
@@ -658,7 +734,7 @@ def main():
 
         html = render_dashboard(
             season, week, card, gambling, pool, ranked, ledger, healths,
-            generated_at=datetime.utcnow().isoformat(),
+            generated_at=datetime.utcnow().isoformat(), signals=signals,
         )
 
         os.makedirs("docs", exist_ok=True)

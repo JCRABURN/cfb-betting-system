@@ -369,6 +369,28 @@ CREATE INDEX IF NOT EXISTS idx_raw_payloads_lookup
 -- written first, so the original locked value is never lost, only
 -- superseded with an audit trail.
 @@CONTEST_CORRECTIONS_DDL@@
+
+-- The pool's FULL slate of frozen lines (every game it lists, picked or not),
+-- as of the Tuesday-noon freeze (2026-10-15). contest_entries only holds the
+-- user's picks; the stale-number signal (models/move_signal.py) needs every
+-- game, because the interesting games are the ones not yet picked. Immutable
+-- in the same sense as contest_entries: written once per (contest, season,
+-- week, game_id), a differing re-ingest is reported as a conflict, never
+-- applied. pool_total is NULL when the sheet carried no total for the game.
+CREATE TABLE IF NOT EXISTS pool_lines (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    contest TEXT NOT NULL,
+    season INTEGER NOT NULL,
+    week INTEGER NOT NULL,
+    game_id INTEGER NOT NULL,
+    home_team TEXT NOT NULL,
+    away_team TEXT NOT NULL,
+    pool_home_spread REAL NOT NULL,      -- negative = home favored (project convention)
+    pool_total REAL,
+    source TEXT NOT NULL,                -- e.g. 'slate:week_7_2026_splashsports_slate.xlsx'
+    ingested_at TEXT NOT NULL,
+    UNIQUE(contest, season, week, game_id)
+);
 """
 SCHEMA = SCHEMA.replace(
     "@@CONTEST_ENTRIES_DDL@@",
