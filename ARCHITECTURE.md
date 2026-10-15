@@ -1146,3 +1146,27 @@ Implications:
 3. Pace counts are play counts, not modeled values, so they should not drift like this. Unverified: no earlier vintage of pace exists to compare.
 
 Options if it needs resolving (decision deferred): re-snapshot all history under one vintage (`--force`, ~105 requests) and re-fit; and/or store a vintage tag with each snapshot. The `fetched_at` column already records when each was taken.
+
+### Resolved 2026-10-15: all history re-snapshotted under one vintage
+
+Done: `--force` re-snapshot of 2019-2025 (weeks 1-15) and 2026 (weeks 1-7 only; weeks 8-15 deliberately excluded, since a forced run would otherwise insert *future* snapshots duplicating week 7 that the audit would later skip as "already ingested"), then `--pace` to refill `games_played`. Verified afterward: identical row structure, 0 duplicates, no future weeks, and today's API output now matches stored EPA exactly (max abs diff 0.00). The old vintage is preserved in git history (commit 4f7c6ee).
+
+Walk-forward EPA-differential baseline, same harness and games, old vs new vintage (n = 3,714 graded games, 2021-2025):
+
+| | old vintage | new vintage |
+|---|---|---|
+| ATS | 51.1% | **50.5%** |
+| ROI (-110) | -2.4% | **-3.6%** |
+| EPA-diff coefficient (by test season) | 34.5 - 38.9 | 30.7 - 34.5 |
+| mean abs edge | 7.33 | 7.18 |
+| edge < 10 | 51.4% (1401-1325-58) | 50.3% (1384-1369-57) |
+| edge >= 10 | 50.2% (462-458-10) | 51.1% (456-437-11) |
+| pick sides that flipped | | 274 / 3,714 (7.4%) |
+
+**This did not improve the model, and should not be described as if it did.** ATS and ROI are marginally lower on the new vintage in all five seasons; the 0.6-point difference is inside noise for this sample, and the conclusion in sections 19-20 ("no demonstrated edge; every bucket at or below ~52.4% break-even") is unchanged. What the refresh bought is **consistency**, not accuracy:
+
+- The fitted coefficient fell ~10%, tracking the ~13% wider dispersion of the current vintage, so training and live inputs are now on the same scale. Before, live predicted margins were over-scaled.
+- Live effect on the Week 7 card: mean abs edge 5.69 -> 4.81, `low_confidence_large_edge` games 9 -> 6, and 8 of 57 sides flip (14%), mostly near-zero-edge games.
+- The first-seen/stored numbers no longer depend on which Wednesday a snapshot was taken.
+
+**What this does NOT fix, stated plainly:** the lookahead caveat in implication 2 above. A re-snapshot cannot make historical "as of week N" EPA free of an expected-points model that has seen later data; today's vintage has seen *more* of it (including 2026), not less. Nor does it freeze the vintage going forward: each new weekly snapshot is taken under whatever CFBD's model is that day, so drift between old and new weeks will re-accumulate. If the next re-fit looks off, check this first. The sound long-run mitigation is to compare each new snapshot against a re-fetch of an older week (the `--pace` backfill already prints this mismatch) and re-snapshot when it exceeds a tolerance, rather than assume stability.
