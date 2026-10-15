@@ -113,7 +113,7 @@ footer .theme-toggle button.active { background: var(--ink); color: var(--bg); }
     </div>
     <div class="masthead-meta">
       <div class="week">Week 7 &middot; 2026</div>
-      <div class="synced">Generated Oct 15, 18:06 UTC</div>
+      <div class="synced">Generated Oct 15, 18:16 UTC</div>
     </div>
   </div>
 
@@ -256,6 +256,15 @@ footer .theme-toggle button.active { background: var(--ink); color: var(--bg); }
     <p class="dek">Your locked picks against the pool's own number, compared to where the market sits now. Sorted worst-for-your-pick first.</p>
     
     <div class="empty-state">No pool picks entered for this week yet &mdash; run <code>models/pool_view.py</code> after committing <code>data/pool_picks/week_7_2026.csv</code>.</div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head">
+      <div><div class="eyebrow headline">Headline &middot; Your Pool</div><h2 class="display">Blended Top 5</h2></div>
+      <div class="asof mono">spread + totals, one scale &middot; 5 pts = most confident</div>
+    </div>
+    <p class="dek">Every upcoming game's spread and total, ranked together by estimated chance of beating the pool's frozen number; the highest goes in your 5-point slot. Picks come from the market's current number differing from the pool's frozen one (movement since the freeze, or a difference in source, which a single snapshot can't separate). The spread model is only a filler: its backtested hit rate is ~50.5% at every edge size, so it never outranks a market gap.</p>
+    <div class="table-wrap"><table><thead><tr><th class="num">Pts</th><th>Game</th><th>Market</th><th>Pick at the pool number</th><th class="num">Est. win</th><th>Why</th></tr></thead><tbody><tr><td class="num mono"><strong>5</strong></td><td class="matchup"><span class="away">Georgia Tech</span><span class="at">@</span>Virginia Tech</td><td>total</td><td><strong>Under 57.5</strong></td><td class="num mono">55.1%</td><td>market's number differs from the pool's <span class="pill flip" title="one market snapshot so far">1 snapshot</span></td></tr><tr><td class="num mono"><strong>4</strong></td><td class="matchup"><span class="away">Ball State</span><span class="at">@</span>Bowling Green</td><td>total</td><td><strong>Over 45.5</strong></td><td class="num mono">55.1%</td><td>market's number differs from the pool's <span class="pill flip" title="one market snapshot so far">1 snapshot</span></td></tr><tr><td class="num mono"><strong>3</strong></td><td class="matchup"><span class="away">Mississippi State</span><span class="at">@</span>LSU</td><td>total</td><td><strong>Under 58.5</strong></td><td class="num mono">54.3%</td><td>market's number differs from the pool's <span class="pill flip" title="one market snapshot so far">1 snapshot</span></td></tr><tr><td class="num mono"><strong>2</strong></td><td class="matchup"><span class="away">Wisconsin</span><span class="at">@</span>UCLA</td><td>total</td><td><strong>Under 44.5</strong></td><td class="num mono">54.3%</td><td>market's number differs from the pool's <span class="pill flip" title="one market snapshot so far">1 snapshot</span></td></tr><tr><td class="num mono"><strong>1</strong></td><td class="matchup"><span class="away">Oklahoma State</span><span class="at">@</span>Houston</td><td>total</td><td><strong>Over 61.5</strong></td><td class="num mono">53.3%</td><td>market's number differs from the pool's <span class="pill flip" title="one market snapshot so far">1 snapshot</span></td></tr></tbody></table></div><p class="dek"><strong>Expected 2.7 of 5 correct, 8.2 of 15 points</strong> (a pure coin flip is 7.5). Chance of a perfect 5: 4.8%; 25% to get 4 or more. These assume the five results are independent and the estimates are right.</p><p class="dek">&#9888; Some picks rest on a single market snapshot, so a gap there cannot yet be told apart from a permanent source difference between the pool and our books.</p>
   </section>
 
   <section class="panel">

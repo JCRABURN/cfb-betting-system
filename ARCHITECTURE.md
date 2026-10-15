@@ -1197,3 +1197,45 @@ The pool freezes its lines Tuesday noon and picks are submitted afterward; the m
 - **Totals have no signals yet**: live totals began only with the 2026-10-14 feed change and none have landed. `totals_collected` in the report says so explicitly.
 - **Observation timing:** "latest pre-kickoff" is the last pull before the game (Tue/Thu/Sat), which is at or after the moment you pick; the gap you could actually *see* is whichever pull preceded your submission. The measured gap is therefore an upper-ish bound on what was capturable.
 - **Estimate, not promise:** `p_win_est` = Phi(|gap|/sigma). It ignores pushes and vig and assumes the market number is unbiased.
+
+## 35. The blended top 5 (2026-10-15)
+
+### What it does
+
+One ranked top 5 across **both** markets, built the way the pool scores: five picks, rank-weighted (5 points for the most confident down to 1; 15 available per week). Every upcoming game's spread and total becomes a candidate with one number attached, its estimated probability of beating the **pool's** frozen line; the five best are taken and the highest probability goes in the 5-point slot. For a rank-weighted pool that assignment provably maximizes expected points (rearrangement inequality; tested by brute force over permutations).
+
+`models/blended_ranker.py`; midweek workflow step; dashboard "Blended Top 5" panel above the stale-number list.
+
+### Where each probability comes from, and why they are not treated equally
+
+| source | probability | evidence |
+|---|---|---|
+| **market gap** (spread or total) | Phi(abs gap / sigma), sigma ~15.5 | 2021-2025 open->close test: 56-57% at 2-3pt, ~60% at 3+pt (section 32) |
+| **spread model** | one pooled 50.47% | walk-forward 1840-1806; see below |
+
+**The model gets one number on purpose.** The edge-bucket calibration run (3,646 decided, 2021-2025, current vintage) gave 46.3 / 50.1 / 48.5 / 53.0 / 53.9 / 47.6 / 51.1% for |edge| 0-1, 1-2, 2-3, 3-5, 5-7, 7-10, 10+ (n = 389-904 each, standard error ~2-2.5 points). That is non-monotonic noise: a chi-square test that all buckets share one rate gives p ~ 0.17. Using the raw buckets would have let a 5-7pt model pick (53.9%) outrank a genuine 1.0pt market gap (52.6%) purely through sampling noise. Shrinking every bucket to the pooled rate is the statistically honest calibration, and it means **model picks never outrank a market-gap signal**. Tested.
+
+### Hard rules (each has a test)
+
+- **The model cannot override a market gap.** If both exist for a game's spread the gap decides side and probability; the model's side is carried as `model_agrees` for information only.
+- Model picks flagged `low_confidence_large_edge` / `no_pick_extrapolation` are never candidates (standing doctrine).
+- Only games that have not kicked off are candidates.
+- One candidate per (game, market); at most 2 per game. Spread/total correlation is **not** modeled.
+- Everything is graded against the pool's number, never the market's.
+- A candidate whose gap rests on a **single market snapshot** is flagged, because one snapshot cannot distinguish "the market moved since the Tuesday freeze" from "the pool's source differs from our three books". The panel's wording reflects this ("market's number differs from the pool's"), not "moved".
+
+### Honest numbers it prints
+
+Assuming independence and correct estimates: expected correct, expected points of 15, P(5/5), P(>=4), P(>=3), always next to the coin-flip baseline (7.5). First live run (week 7): five totals at 53.3-55.1% -> expected 2.7 correct, **8.2 of 15 points (vs 7.5 for coin flips), P(perfect) 4.8%, P(>=4) 25%**. All five rest on one snapshot. That is a modest, honest edge over chance, not a path to a perfect card.
+
+### The suggestion file cannot become a locked pick
+
+`pool_view.py` auto-ingests `data/pool_picks/week_{N}_{season}.csv` as **locked** `contest_entries`. The blend therefore writes `week_{N}_{season}_suggested_top5.csv` (same column format, so it can be reviewed and renamed deliberately). A test asserts the two paths cannot collide. Suggestions are never locked automatically.
+
+### Learning: logged and graded, not reconstructed
+
+A suggestion is not reproducible later (the market keeps moving), so each run appends its picks to `blend_log` when they are made. `grade_blend()` grades, per (week, game, market), the **last suggestion logged before that game's kickoff** (what the blend was saying at the last moment a pick could still be made), against the pool's number, and reports the hit rate next to the mean estimated probability. If the estimates are honest those track each other; the dashboard states the sample is too small to say until it reaches the dozens.
+
+### What it is not
+
+Not a totals *model*: totals candidates exist only through market gaps, and raw pace was shown to carry no incremental information (section 33). Nothing here predicts a game; it ranks mispriced numbers. At the observed rate of ~1-4 gaps >= 2 points per week, most weeks' slots 3-5 will be marginal (53-54%) or model fillers (50.5%), and the printed summary will say so.

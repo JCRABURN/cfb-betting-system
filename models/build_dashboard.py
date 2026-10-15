@@ -39,6 +39,7 @@ import card_generator
 import gambling_view
 import pool_view
 import move_signal
+import blended_ranker
 
 # How stale a checkpoint's last SUCCESSFUL run can be before it's flagged,
 # even without an explicit error -- catches "this simply never ran again"
@@ -318,6 +319,61 @@ def _totals_movement_rows(totals):
     return "\n".join(rows)
 
 
+def _blend_report(conn, season, week, card):
+    """Blended top 5 plus its logged track record, as one dashboard section."""
+    rep = blended_ranker.build_blend(conn, season, week, card=card)
+    rep["track_record"] = blended_ranker.grade_blend(conn, season)
+    return rep
+
+
+def _blend_panel_html(blend):
+    if not blend or not blend.get("picks"):
+        msg = "No blended picks yet &mdash; this week's pool slate hasn't been ingested, or every game has started."
+        return f'<div class="empty-state">{msg}</div>'
+    rows = []
+    for p in blend["picks"]:
+        why = ("market's number differs from the pool's" if p["source"] == "market_gap"
+               else "spread model only (no market gap)")
+        if p.get("model_agrees") is False:
+            why += " &middot; model disagrees"
+        weak = ' <span class="pill flat">weak</span>' if p["tier"] == "weak" else ""
+        snap = ' <span class="pill flip" title="one market snapshot so far">1 snapshot</span>' if p.get("single_snapshot") else ""
+        rows.append(
+            f'<tr><td class="num mono"><strong>{p["points"]}</strong></td>'
+            f'<td class="matchup"><span class="away">{_esc(p["away_team"])}</span>'
+            f'<span class="at">@</span>{_esc(p["home_team"])}</td>'
+            f'<td>{_esc(p["market"])}</td>'
+            f'<td><strong>{_esc(p["pick_text"])}</strong>{weak}</td>'
+            f'<td class="num mono">{p["p_win_est"]:.1%}</td>'
+            f'<td>{why}{snap}</td></tr>'
+        )
+    t = (
+        '<div class="table-wrap"><table><thead><tr><th class="num">Pts</th><th>Game</th><th>Market</th>'
+        '<th>Pick at the pool number</th><th class="num">Est. win</th><th>Why</th></tr></thead>'
+        f'<tbody>{"".join(rows)}</tbody></table></div>'
+    )
+    sm = blend["summary"]
+    perfect = f'{sm["p_perfect"]:.1%}' if sm["p_perfect"] is not None else "n/a"
+    ge4 = f'{sm["p_ge4"]:.0%}' if sm["p_ge4"] is not None else "n/a"
+    summary = (
+        f'<p class="dek"><strong>Expected {sm["expected_correct"]:.1f} of {sm["n_picks"]} correct, '
+        f'{sm["expected_points"]:.1f} of {sm["max_points"]} points</strong> '
+        f'(a pure coin flip is {sm["max_points"] / 2:.1f}). Chance of a perfect {sm["n_picks"]}: {perfect}; '
+        f'{ge4} to get 4 or more. These assume the five results are independent and the estimates are right.</p>'
+    )
+    notes = "".join(f'<p class="dek">&#9888; {_esc(w)}</p>' for w in blend.get("warnings", []))
+    tr = blend.get("track_record") or {}
+    track = ""
+    if tr.get("n"):
+        track = (
+            f'<p class="dek"><strong>Logged track record</strong> (last suggestion before each kickoff, graded '
+            f'against the pool number): {tr["w"]}&ndash;{tr["l"]}&ndash;{tr["p"]}, {tr["hit"]:.0%} hit, '
+            f'against an average estimate of {tr["mean_p_est"]:.0%}. Too few games to say whether the estimates '
+            f'are honest until this reaches the dozens.</p>'
+        )
+    return t + summary + notes + track
+
+
 def _stale_signal_rows(signals):
     """Rows for the stale-pool-number table (models/move_signal.py). Only
     still-upcoming games are actionable; a finished or started game's gap is
@@ -503,7 +559,7 @@ def _prior_season_banner_html(card):
 
 
 def render_dashboard(season, week, card, gambling, pool, ranked, ledger, healths, generated_at,
-                     signals=None):
+                     signals=None, blend=None):
     # Literal "·" here, not the &middot; entity -- _health_chip_html() runs
     # day_label through _esc(), which would escape the entity's own "&"
     # into "&amp;middot;" and render literally instead of as a dot (the bug
@@ -533,6 +589,7 @@ def render_dashboard(season, week, card, gambling, pool, ranked, ledger, healths
             f"<tbody>{pool_rows}</tbody></table></div>"
         )
 
+    blend_body = _blend_panel_html(blend)
     signal_rows = _stale_signal_rows(signals)
     if signal_rows is None:
         signal_body = (
@@ -648,6 +705,15 @@ def render_dashboard(season, week, card, gambling, pool, ranked, ledger, healths
 
   <section class="panel">
     <div class="panel-head">
+      <div><div class="eyebrow headline">Headline &middot; Your Pool</div><h2 class="display">Blended Top 5</h2></div>
+      <div class="asof mono">spread + totals, one scale &middot; 5 pts = most confident</div>
+    </div>
+    <p class="dek">Every upcoming game's spread and total, ranked together by estimated chance of beating the pool's frozen number; the highest goes in your 5-point slot. Picks come from the market's current number differing from the pool's frozen one (movement since the freeze, or a difference in source, which a single snapshot can't separate). The spread model is only a filler: its backtested hit rate is ~50.5% at every edge size, so it never outranks a market gap.</p>
+    {blend_body}
+  </section>
+
+  <section class="panel">
+    <div class="panel-head">
       <div><div class="eyebrow headline">Headline &middot; Your Pool</div><h2 class="display">Stale Pool Numbers</h2></div>
       <div class="asof mono">frozen pool number vs. market now &middot; no model</div>
     </div>
@@ -727,6 +793,7 @@ def main():
                 pool, _ = _try_build("pool_view", pool_view.build_pool_view, conn, entries)
             ranked = pool_view.rank_pool_picks(pool, card) if pool else None
             signals, _ = _try_build("move_signal", move_signal.build_report, conn, season, week)
+            blend, _ = _try_build("blended_ranker", _blend_report, conn, season, week, card)
 
             ledger = build_season_ledger(conn, season)
         finally:
@@ -734,7 +801,7 @@ def main():
 
         html = render_dashboard(
             season, week, card, gambling, pool, ranked, ledger, healths,
-            generated_at=datetime.utcnow().isoformat(), signals=signals,
+            generated_at=datetime.utcnow().isoformat(), signals=signals, blend=blend,
         )
 
         os.makedirs("docs", exist_ok=True)

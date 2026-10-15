@@ -377,6 +377,29 @@ CREATE INDEX IF NOT EXISTS idx_raw_payloads_lookup
 -- in the same sense as contest_entries: written once per (contest, season,
 -- week, game_id), a differing re-ingest is reported as a conflict, never
 -- applied. pool_total is NULL when the sheet carried no total for the game.
+-- Append-only log of the blended top-5 suggestions as they were made
+-- (2026-10-15). A suggestion is not reproducible later -- the market keeps
+-- moving -- so it is stored when generated, and graded afterward against the
+-- pool's number (blended_ranker.grade_blend uses the last suggestion logged
+-- before each game's kickoff).
+CREATE TABLE IF NOT EXISTS blend_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    season INTEGER NOT NULL,
+    week INTEGER NOT NULL,
+    snapshot_at TEXT NOT NULL,
+    game_id INTEGER NOT NULL,
+    market TEXT NOT NULL,                -- 'spread' | 'total'
+    side TEXT NOT NULL,                  -- 'home'|'away' | 'over'|'under'
+    points INTEGER NOT NULL,             -- 5 = most confident ... 1
+    pool_number REAL NOT NULL,           -- the FROZEN pool line it is graded against
+    market_number REAL,
+    gap REAL,
+    p_win_est REAL NOT NULL,
+    source TEXT NOT NULL,                -- 'market_gap' | 'spread_model'
+    tier TEXT,
+    kickoff TEXT
+);
+
 CREATE TABLE IF NOT EXISTS pool_lines (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     contest TEXT NOT NULL,

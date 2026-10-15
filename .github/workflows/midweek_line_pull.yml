@@ -98,6 +98,17 @@ jobs:
           python data/ingest_pool_slate.py
           python models/move_signal.py
 
+      - name: Blended top 5 (spread + totals, one scale)
+        # Ranks every upcoming game's spread and total by estimated chance of
+        # beating the pool's frozen number, logs the suggestion (append-only,
+        # for honest grading later), and writes a *_suggested_top5.csv that
+        # pool_view does NOT ingest as locked picks. ARCHITECTURE.md section
+        # 35. Non-fatal: must not block the snapshot or the dashboard.
+        if: always() && steps.tests.outcome == 'success'
+        env:
+          CFBD_API_KEY: ${{ secrets.CFBD_API_KEY }}
+        run: python models/blended_ranker.py
+
       - name: Market movement view
         if: always() && steps.tests.outcome == 'success'
         env:
