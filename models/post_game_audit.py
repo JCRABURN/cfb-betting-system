@@ -54,7 +54,7 @@ import os
 import sys
 import json
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _ROOT)
@@ -186,6 +186,58 @@ def recompute_settled_clv(conn, season):
     return changed
 
 
+def week_is_complete(conn, season, week, now=None):
+    """True only when the week's games have actually been played.
+
+    Added 2026-11-10 after finding every live point-in-time snapshot from week
+    7 onward held the PREVIOUS week's data. The audit runs Monday, when the
+    upcoming week has zero pending picks and (until Tuesday's fetch_stats) no
+    games loaded -- so the old "zero pending picks" gate was trivially true
+    for a week that had not been played, and a "through week N" snapshot was
+    fetched before week N existed. Idempotency then locked the stale copy in.
+
+    Complete means: the week has games in `games`, and every one is either
+    marked completed or kicked off more than 48 hours ago (a postponed or
+    cancelled game must not block a week forever). Any game still upcoming,
+    or started within 48h and not yet final, means NOT complete. No games at
+    all means NOT complete: that is exactly the unplayed-upcoming-week case."""
+    now = now or datetime.utcnow()
+    cutoff = (now - timedelta(hours=48)).isoformat()[:19]
+    games = conn.execute(
+        "SELECT start_date, completed FROM games WHERE season = ? AND week = ?", (season, week)
+    ).fetchall()
+    if not games:
+        return False
+    for start, completed in games:
+        if completed:
+            continue
+        if start and start[:19] < cutoff:
+            continue
+        return False
+    return True
+
+
+def purge_premature_snapshots(conn, season, now=None):
+    """Self-healing: delete point-in-time rows for any week of `season` that
+    is not complete. A snapshot of an unplayed week is wrong by construction
+    (it holds earlier data under a later label), and because ingestion is
+    idempotent it would otherwise survive forever and be used as that week's
+    "as of" input. Deleting it lets the gated refresh recreate it correctly
+    once the week is really finished. Returns the number of rows removed.
+    Scope: one season only, and only cfbd_point_in_time rows."""
+    weeks = [r[0] for r in conn.execute(
+        "SELECT DISTINCT week FROM team_game_stats WHERE season = ? AND source = ?",
+        (season, pit.SOURCE))]
+    removed = 0
+    for week in weeks:
+        if not week_is_complete(conn, season, week, now):
+            removed += conn.execute(
+                "DELETE FROM team_game_stats WHERE season = ? AND week = ? AND source = ?",
+                (season, week, pit.SOURCE)).rowcount
+    conn.commit()
+    return removed
+
+
 def refresh_point_in_time_stats_if_week_complete(conn, season, week):
     """Refresh point-in-time team stats for `week` the moment it's fully
     graded (2026-09-09) -- card_generator.py's real in-season predictions
@@ -196,14 +248,14 @@ def refresh_point_in_time_stats_if_week_complete(conn, season, week):
     missing_pregame_stats, because nothing had ever fetched Week 1's
     point-in-time snapshot for the live season.
 
-    Gated on zero pending live picks left for `week` -- calling
-    backfill_week() before every game in the week has finished would lock
-    in an incomplete "through week N" snapshot, since it's
-    idempotent-by-design (skips an already-ingested week even if it was
-    written incomplete, short of --force) and never re-checked
-    automatically afterward.
+    Gated TWICE -- on zero pending live picks AND on week_is_complete().
+    The first alone was the bug (2026-11-10): an unplayed upcoming week has
+    no pending picks yet, so the gate passed and a snapshot was fetched
+    before the week existed, then locked in by idempotency. Calling
+    backfill_week() before every game has finished would store an
+    incomplete "through week N" snapshot that is never re-checked.
 
-    Returns None if `week` still has a pending pick (not run), else
+    Returns None if `week` is not yet complete (not run), else
     backfill_week()'s own (rows_added, status).
 
     Logs an `ingestion_runs` row (source='cfbd_point_in_time', same name the
@@ -218,6 +270,8 @@ def refresh_point_in_time_stats_if_week_complete(conn, season, week):
         (season, week),
     ).fetchone()[0]
     if still_pending > 0:
+        return None
+    if not week_is_complete(conn, season, week):
         return None
 
     started_at = datetime.utcnow().isoformat()
@@ -408,6 +462,7 @@ def main():
             # common case (nothing pending anywhere but the current week),
             # and still fetches/persists current-week scores even before
             # any of its picks have gone pending.
+            purged = purge_premature_snapshots(conn, season)
             weeks = sorted(set(find_weeks_with_pending_picks(conn, season)) | {current_week})
 
             scores_updated = 0
@@ -440,6 +495,8 @@ def main():
         if len(weeks) > 1:
             for week, ws, wg, wh in per_week:
                 print(f"  Week {week}: {ws} scored, {wg} graded ({wh} hooks)")
+        if purged:
+            print(f"Purged {purged} point-in-time row(s) belonging to weeks not yet played.")
         if clv_corrected:
             print(f"Recomputed CLV for {clv_corrected} settled pick(s) against pre-kickoff lines.")
         for week, rows_added, status in pit_weeks_done:

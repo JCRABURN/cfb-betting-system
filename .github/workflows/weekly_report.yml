@@ -71,6 +71,18 @@ jobs:
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
         run: python data/fetch_odds.py
 
+      - name: Catch up last week's grading and point-in-time snapshot
+        # The Monday audit can finish before the Monday-night game does, which
+        # left that week's snapshot missing -- or, worse, present but taken
+        # before the week was played (ARCHITECTURE.md section 36). Running the
+        # (idempotent) audit here, after fetch_stats has loaded the new week's
+        # games and BEFORE the card reads team stats, closes that gap.
+        # Non-fatal: the card still builds from the latest complete snapshot.
+        if: always() && steps.tests.outcome == 'success'
+        env:
+          CFBD_API_KEY: ${{ secrets.CFBD_API_KEY }}
+        run: python models/post_game_audit.py
+
       - name: Generate weekly card (EPA-only baseline)
         if: steps.tests.outcome == 'success'
         env:

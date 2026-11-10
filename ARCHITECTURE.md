@@ -1239,3 +1239,29 @@ A suggestion is not reproducible later (the market keeps moving), so each run ap
 ### What it is not
 
 Not a totals *model*: totals candidates exist only through market gaps, and raw pace was shown to carry no incremental information (section 33). Nothing here predicts a game; it ranks mispriced numbers. At the observed rate of ~1-4 gaps >= 2 points per week, most weeks' slots 3-5 will be marginal (53-54%) or model fillers (50.5%), and the printed summary will say so.
+
+## 36. Live point-in-time snapshots were one week stale from week 7 on (2026-11-10)
+
+### What was wrong
+
+Found while loading the Week 11 slate: point-in-time team stats existed for **week 11**, which had not been played. Checked against hard evidence rather than assumed: a correct "through week W" snapshot has about W games played per team. Labels 1-6 did. From label 7 on, each label held the **previous** week's data (Georgia at label 11: 9 games and 451 plays, which is "through week 10"; the table also showed fetch times of Monday, before the labeled week's games).
+
+**Cause.** `refresh_point_in_time_stats_if_week_complete()` (added in section 29) was gated only on "zero pending picks for the week". The Monday audit grades the week just finished, but its week list also includes `get_current_week()`, which on Monday is already the *next* week: no picks yet (the card is built Tuesday) and no games loaded yet (fetch_stats loads them Tuesday). Zero pending picks is trivially true for an unplayed week, so the gate passed and a "through week N+1" snapshot was fetched before week N+1 existed. Idempotency then locked the stale copy in, and the correct snapshot for that label was never taken. The function's own docstring described the gate as sufficient; two tests asserted the buggy behavior ("a week with no picks still runs").
+
+**My part.** Label 7 is also partly mine: the Oct 14 re-snapshot (section 33) forced 2026 weeks 1-7, but week 7 was still in progress (games Oct 13-17), so it re-fetched an incomplete week.
+
+### Effect
+
+`get_team_stats_as_of(week W)` reads the latest snapshot with label < W, so from week 8 on every live card used team stats one full week stale (this week's card used data through week 9 instead of week 10). Measured on Week 11, stale-input card vs corrected card: **4 of 65 sides differ (6%)**, mean abs edge 4.50 -> 4.19, one game moves out of `low_confidence_large_edge`. Modest, but systematic and silent. ATS/ROI of already-graded weeks were produced from the stale inputs and are not retroactively changed; they are not invalidated either (the model has no demonstrated edge on correct inputs, so a 6% side flip rate cannot have been hiding one). The historical 2019-2025 snapshots are unaffected (they came from the backfill, which fetches completed seasons).
+
+### Fix
+
+1. **`week_is_complete(conn, season, week)`**: true only if the week has games loaded and every one is final or kicked off more than 48 hours ago (a postponed game must not block a week forever). No games loaded means NOT complete, which is exactly the unplayed-upcoming-week case. The refresh now requires this *and* zero pending picks.
+2. **`purge_premature_snapshots()`**: runs at the start of every audit; deletes point-in-time rows for any week of the current season that is not complete, so a premature snapshot can never survive idempotency again. Scoped to one season and to `cfbd_point_in_time` only.
+3. **Weekly workflow** now runs the (idempotent) audit after `fetch_stats` loads the new week and *before* the card is built. This closes the Monday-night gap: the audit can finish before the last Monday game does, which would leave the finished week without a snapshot until the following Monday.
+4. **Data repair:** forced re-snapshot of 2026 weeks 7-10 (all genuinely played), `games_played` refilled, the premature week-11 snapshot purged. Verified every label 1-10 now matches the games actually completed through that week (Georgia checked label by label).
+5. **Tests:** the two tests that encoded the bug were rewritten; added regressions for "no games loaded -> never snapshots", "upcoming game -> never snapshots", completeness edge cases (postponed game, recent unfinished game), and purge scope/idempotency. 541 pass.
+
+### Lesson recorded
+
+A gate on "nothing pending" is not a gate on "finished". The check has to be on the thing being claimed (the games were played), not on the absence of a side effect. The same shape of mistake (idempotency preserving a bad first write) was behind section 24 and the original straggler-week bug; any future idempotent ingest should validate its *input's* completeness, not just skip if present.

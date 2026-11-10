@@ -351,6 +351,8 @@ def test_refresh_point_in_time_does_not_log_when_already_ingested(temp_db, monke
 
 def test_refresh_point_in_time_logs_error_run_when_fetch_fails(temp_db, monkeypatch):
     conn = temp_db.get_connection()
+    insert_game(conn, 1, 2026, 1, "A", "B", home_pts=30, away_pts=10, completed=1)
+    conn.commit()
     monkeypatch.setattr(pga.pit, "fetch_point_in_time_stats", lambda year, week: None)
 
     result = pga.refresh_point_in_time_stats_if_week_complete(conn, 2026, 1)
@@ -375,17 +377,123 @@ def test_refresh_point_in_time_does_not_log_while_week_incomplete(temp_db, monke
     conn.close()
 
 
-def test_refresh_point_in_time_stats_no_pending_at_all_still_runs(temp_db, monkeypatch):
-    """A week with zero picks ever recorded (e.g. nothing lined that week)
-    is not the same as "still in progress" -- it should still get its
-    point-in-time snapshot refreshed, not be mistaken for incomplete."""
+def test_refresh_point_in_time_stats_complete_week_with_no_picks_still_runs(temp_db, monkeypatch):
+    """A finished week with zero picks recorded is not "incomplete" -- it
+    should still get its snapshot. (Completeness now comes from the games,
+    not from the picks table.)"""
     conn = temp_db.get_connection()
+    insert_game(conn, 1, 2026, 1, "A", "B", home_pts=30, away_pts=10, completed=1)
+    conn.commit()
     monkeypatch.setattr(pga.pit, "fetch_point_in_time_stats", lambda year, week: [])
 
     result = pga.refresh_point_in_time_stats_if_week_complete(conn, 2026, 1)
     conn.close()
 
     assert result == (0, "empty")
+
+
+def test_refresh_never_snapshots_a_week_with_no_games_loaded(temp_db, monkeypatch):
+    """THE BUG (found 2026-11-10): the Monday audit's upcoming week has zero
+    pending picks AND no games loaded yet (fetch_stats loads them Tuesday).
+    The old gate treated that as "complete" and fetched a snapshot before the
+    week existed; idempotency then locked in the stale copy, so every live
+    snapshot from week 7 on held the previous week's data."""
+    conn = temp_db.get_connection()
+    called = []
+    monkeypatch.setattr(pga.pit, "fetch_point_in_time_stats", lambda y, w: called.append(w) or [])
+    assert pga.refresh_point_in_time_stats_if_week_complete(conn, 2026, 11) is None
+    assert called == []                                     # no API call, nothing written
+    conn.close()
+
+
+def test_refresh_never_snapshots_a_week_with_an_upcoming_game(temp_db, monkeypatch):
+    conn = temp_db.get_connection()
+    insert_game(conn, 1, 2026, 11, "A", "B")                # not completed
+    conn.execute("UPDATE games SET start_date = '2999-01-01T00:00:00.000Z' WHERE game_id = 1")
+    conn.commit()
+    called = []
+    monkeypatch.setattr(pga.pit, "fetch_point_in_time_stats", lambda y, w: called.append(w) or [])
+    assert pga.refresh_point_in_time_stats_if_week_complete(conn, 2026, 11) is None
+    assert called == []
+    conn.close()
+
+
+# ---- week_is_complete / purge_premature_snapshots -----------------------------------------
+
+from datetime import datetime as _dt
+
+NOW = _dt(2026, 11, 10, 22, 0, 0)
+
+
+def _g(conn, gid, week, start, completed):
+    conn.execute("INSERT INTO games (game_id, season, week, home_team, away_team, start_date, completed) "
+                 "VALUES (?, 2026, ?, ?, ?, ?, ?)", (gid, week, f"H{gid}", f"A{gid}", start, completed))
+
+
+def test_week_complete_only_when_every_game_is_final(temp_db):
+    conn = temp_db.get_connection()
+    _g(conn, 1, 10, "2026-11-07T20:00:00.000Z", 1)
+    _g(conn, 2, 10, "2026-11-07T23:00:00.000Z", 1)
+    conn.commit()
+    assert pga.week_is_complete(conn, 2026, 10, NOW) is True
+    conn.close()
+
+
+def test_week_with_an_unfinished_recent_game_is_not_complete(temp_db):
+    conn = temp_db.get_connection()
+    _g(conn, 1, 10, "2026-11-07T20:00:00.000Z", 1)
+    _g(conn, 2, 10, "2026-11-10T20:00:00.000Z", 0)          # started <48h ago, not final
+    conn.commit()
+    assert pga.week_is_complete(conn, 2026, 10, NOW) is False
+    conn.close()
+
+
+def test_postponed_game_long_ago_does_not_block_the_week_forever(temp_db):
+    conn = temp_db.get_connection()
+    _g(conn, 1, 10, "2026-11-07T20:00:00.000Z", 1)
+    _g(conn, 2, 10, "2026-11-01T20:00:00.000Z", 0)          # never played, >48h ago
+    conn.commit()
+    assert pga.week_is_complete(conn, 2026, 10, NOW) is True
+    conn.close()
+
+
+def test_week_with_no_games_is_not_complete(temp_db):
+    conn = temp_db.get_connection()
+    assert pga.week_is_complete(conn, 2026, 11, NOW) is False
+    conn.close()
+
+
+def _snap(conn, week, season=2026):
+    conn.execute("INSERT INTO team_game_stats (season, week, team, source, fetched_at) "
+                 "VALUES (?, ?, 'T', 'cfbd_point_in_time', 'now')", (season, week))
+
+
+def test_purge_removes_only_snapshots_of_unplayed_weeks(temp_db):
+    conn = temp_db.get_connection()
+    _g(conn, 1, 10, "2026-11-07T20:00:00.000Z", 1)           # week 10: played
+    _g(conn, 2, 11, "2999-01-01T00:00:00.000Z", 0)           # week 11: upcoming
+    _snap(conn, 10)
+    _snap(conn, 11)                                          # the premature one
+    _snap(conn, 11, season=2025)                             # other season: never touched
+    conn.commit()
+    removed = pga.purge_premature_snapshots(conn, 2026, NOW)
+    left = sorted(conn.execute("SELECT season, week FROM team_game_stats").fetchall())
+    conn.close()
+    assert removed == 1
+    assert left == [(2025, 11), (2026, 10)]
+
+
+def test_purge_is_idempotent_and_leaves_other_sources_alone(temp_db):
+    conn = temp_db.get_connection()
+    _g(conn, 2, 11, "2999-01-01T00:00:00.000Z", 0)
+    _snap(conn, 11)
+    conn.execute("INSERT INTO team_game_stats (season, week, team, source, fetched_at) "
+                 "VALUES (2026, 11, 'T', 'cfbd', 'now')")     # raw per-game source, not point-in-time
+    conn.commit()
+    assert pga.purge_premature_snapshots(conn, 2026, NOW) == 1
+    assert pga.purge_premature_snapshots(conn, 2026, NOW) == 0
+    assert conn.execute("SELECT COUNT(*) FROM team_game_stats WHERE source='cfbd'").fetchone()[0] == 1
+    conn.close()
 
 
 # ---------------------------------------------------------------------------
