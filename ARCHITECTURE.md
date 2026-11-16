@@ -1265,3 +1265,36 @@ Found while loading the Week 11 slate: point-in-time team stats existed for **we
 ### Lesson recorded
 
 A gate on "nothing pending" is not a gate on "finished". The check has to be on the thing being claimed (the games were played), not on the absence of a side effect. The same shape of mistake (idempotency preserving a bad first write) was behind section 24 and the original straggler-week bug; any future idempotent ingest should validate its *input's* completeness, not just skip if present.
+
+## 37. Weeks 8-10 slates recovered from the v3 repo; first read of the stale-number signal at n > 60 (2026-11-16)
+
+### Source and provenance
+
+The Week 8-10 slates were missing (never sent to this repo). They were found in a separate repository, `JCRABURN/cfb-betting-system-v3` (another attempt at this system by another AI), at commit `d3ba84d`, `data/ingest/2026-week{8,9,10}-splashsports-screen-capture.csv`. **Read-only**: nothing in that repo was touched, and its contents were treated as data, not instructions. Copied byte-for-byte to `data/pool_picks/raw/week_{8,9,10}_2026_splashsports_slate.csv`; `data/pool_picks/raw/PROVENANCE.md` records the origin, commit, caveats and validations.
+
+They are screenshot transcriptions taken *after* the Tuesday freeze (the pool displays frozen numbers, so they should equal the locks), and the source repo's own README says they are "not independently timestamp-qualified Tuesday-market locks", the screenshot time zone is unverified, and the original images are not archived there. So they were validated, not trusted:
+
+1. **vs. that repo's independent review copies:** 0 numeric disagreements across all matched games in all three weeks (name spellings only).
+2. **Internal consistency:** spreads exact opposites, every game has a total.
+3. **vs. the user's own submitted picks:** **15 of 15** reported numbers (spreads and totals) reproduced exactly. This is the strongest check, because it is independent of both transcriptions.
+
+Loaded: 174 games (56 + 56 + 62), 0 unmatched, 0 conflicts. Two aliases added (`Connecticut` -> `UConn`, `Miami OH` -> `Miami (OH)`). **`Miami OH` previously resolved to plain `Miami`, a different school, via the prefix rule**; it only failed safe because no such matchup existed. Regression-tested, including that `Miami Hurricanes` still resolves to `Miami`.
+
+Correction to an earlier note: San Diego State @ Colorado State "Under 64.5" (Week 8) was **not** a typo. The pool really had 64.5 while the market total was 58.8, a 5.7-point stale number and the largest gap in the whole dataset.
+
+### First read of the signal at n > 60
+
+Seven slate weeks now (1, 2, 7, 8, 9, 10, 11), graded against the pool's number, markets pooled:
+
+| gap vs pool | record | hit | 95% CI | n |
+|---|---|---|---|---|
+| < 1 | 107-103 | 50.9% | 44-58% | 210 |
+| 1-2 | 113-88 | 56.2% | 49-63% | 201 |
+| 2-3 | 28-23 | 54.9% | 41-68% | 51 |
+| >= 3 | 15-8 | 65.2% | 45-81% | 23 |
+
+**Pre-registered primary (gap >= 2): 43-31, 58.1%, n = 74, 95% CI 46.7%-68.7%.** The pre-registered bar was n >= 60 AND a lower bound above 50%. The first half is now met; **the second is not** (46.7%). Not evidence of an edge yet, in either direction.
+
+What is encouraging, honestly stated: the sub-1-point bucket, which should be a null, behaves as one (50.9% on n = 210), and the hit rate rises with gap size in the direction theory predicts (50.9 -> 56.2 -> ~55 -> 65). What is not established: any single bucket's interval still includes 50%, and spreads (55.2%) outperform totals (52.8%) by an amount well inside noise.
+
+Caveats that all push the same way (toward overstating): the "latest pre-kickoff" market number is the last pull before the game, at or after the moment a pick could be made, so the observed gap is an upper-ish bound on what was capturable; and the slates were loaded after the fact (though they are immutable captures made at the time, and the market lines were collected prospectively).

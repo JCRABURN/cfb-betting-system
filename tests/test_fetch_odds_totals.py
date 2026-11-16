@@ -119,3 +119,13 @@ def test_spread_only_payload_still_persists(temp_db):
     conn.close()
     assert rows["draftkings"] == (-3.0, None)
     assert rows["consensus"] == (-3.0, None)
+
+
+def test_week_8_to_10_slate_aliases():
+    """'Miami OH' used to resolve to plain 'Miami' (a different school)."""
+    schools = ["Miami", "Miami (OH)", "UConn", "Massachusetts"]
+    assert fo.resolve_school_name(schools, "Miami OH") == "Miami (OH)"
+    assert fo.resolve_school_name(schools, "Miami OH RedHawks") == "Miami (OH)"
+    assert fo.resolve_school_name(schools, "Miami Hurricanes") == "Miami"
+    assert fo.resolve_school_name(schools, "Connecticut") == "UConn"
+    assert fo.resolve_school_name(schools, "Connecticut Huskies") == "UConn"

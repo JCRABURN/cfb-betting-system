@@ -66,6 +66,11 @@ KNOWN_TEAM_ALIASES = {
     "ULM": "UL Monroe",
     "FIU": "Florida International",
     "FAU": "Florida Atlantic",
+    # Found loading the Week 8-10 slates (2026-11-16). "Miami OH" otherwise
+    # resolves to plain "Miami" via the prefix rule, which is a DIFFERENT
+    # school; it only failed safe because no such game existed.
+    "Connecticut": "UConn",
+    "Miami OH": "Miami (OH)",
 }
 
 
