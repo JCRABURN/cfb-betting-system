@@ -400,6 +400,19 @@ CREATE TABLE IF NOT EXISTS blend_log (
     kickoff TEXT
 );
 
+-- Audited removals from contest_entries (2026-11-16). Locked entries are
+-- immutable, so removing one is a deliberate, recorded act: pool_view.
+-- remove_contest_entries() archives the FULL row here (as JSON) with a reason
+-- BEFORE deleting it. Exists for rows that were never real picks (e.g. the
+-- Week 1 demo/test entries), not as a way to edit history.
+CREATE TABLE IF NOT EXISTS contest_entries_removed (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    original_entry_id INTEGER NOT NULL,
+    payload TEXT NOT NULL,               -- the complete original row, JSON
+    reason TEXT NOT NULL,
+    removed_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS pool_lines (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     contest TEXT NOT NULL,

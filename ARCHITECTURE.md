@@ -1298,3 +1298,15 @@ Seven slate weeks now (1, 2, 7, 8, 9, 10, 11), graded against the pool's number,
 What is encouraging, honestly stated: the sub-1-point bucket, which should be a null, behaves as one (50.9% on n = 210), and the hit rate rises with gap size in the direction theory predicts (50.9 -> 56.2 -> ~55 -> 65). What is not established: any single bucket's interval still includes 50%, and spreads (55.2%) outperform totals (52.8%) by an amount well inside noise.
 
 Caveats that all push the same way (toward overstating): the "latest pre-kickoff" market number is the last pull before the game, at or after the moment a pick could be made, so the observed gap is an upper-ish bound on what was capturable; and the slates were loaded after the fact (though they are immutable captures made at the time, and the market lines were collected prospectively).
+
+## 38. Week 1 demo entries removed, as an audited act (2026-11-16)
+
+Three `contest_entries` rows (ids 1-3: Alabama/East Carolina, Auburn/Baylor, Florida/Florida Atlantic, source `csv:data/pool_picks/week_1_2026.csv`) were test data from the original pool-flow testing, never real picks, and had been skewing every pool report since Week 1. Removed at the user's request.
+
+Locked entries are immutable by design, so removal is deliberately a recorded act rather than a quiet `DELETE`: `pool_view.remove_contest_entries(conn, ids, reason)` archives each row's complete contents as JSON, with the reason and timestamp, into the new `contest_entries_removed` table *before* deleting, all in one transaction. It requires a reason, refuses unknown ids, and refuses any entry that has `contest_entry_corrections` on file (removing it would orphan the audit trail); a refusal removes nothing at all (tested, including that a bad id does not remove the valid ones). It is for rows that were never real picks, not for editing history; a mistyped real pick still goes through `correct_contest_entry()`.
+
+The caller guarded on *content*, not assumption (asserted the exact three ids/source before removing). The demo CSV `data/pool_picks/week_1_2026.csv` was removed from the repo (still in git history) so it cannot be re-ingested.
+
+Pool report afterward (real picks only, weeks 8-11): 20 entries, 10-10; spreads 4-5, totals 6-5. 548 tests pass.
+
+Gotcha found while doing it: a new table only exists in the production DB after `init_db()` runs (every `log_run`-wrapped script does this; an ad hoc script using `get_connection()` does not). The removal failed *safely* (before any delete) for exactly this reason; the script now calls `init_db()` first.

@@ -397,6 +397,48 @@ def load_pool_entries_from_db(conn, season, week, contest=DEFAULT_CONTEST):
     ]
 
 
+def remove_contest_entries(conn, entry_ids, reason):
+    """Audited removal of contest_entries rows that were never real picks
+    (2026-11-16: the three Week 1 demo/test rows). Locked entries are
+    immutable, so this is deliberately NOT quiet: each row's full contents go
+    to contest_entries_removed (JSON, with `reason`) before the DELETE, in one
+    transaction -- all rows archived and removed, or none.
+
+    Refuses (ValueError) if: no reason is given; any id doesn't exist; or any
+    id still has contest_entry_corrections pointing at it (removing it would
+    orphan the audit trail). Returns the number of rows removed. Not a way to
+    edit history: use correct_contest_entry() for a mistyped real pick."""
+    import json
+    if not reason or not reason.strip():
+        raise ValueError("remove_contest_entries requires a non-empty reason")
+    entry_ids = list(entry_ids)
+    if not entry_ids:
+        raise ValueError("remove_contest_entries requires at least one entry id")
+    cur = conn.execute("SELECT * FROM contest_entries WHERE id IN (%s)" % ",".join("?" * len(entry_ids)),
+                       entry_ids)
+    cols = [d[0] for d in cur.description]
+    rows = cur.fetchall()
+    found = {r[cols.index("id")] for r in rows}
+    missing = [i for i in entry_ids if i not in found]
+    if missing:
+        raise ValueError(f"No contest_entries row with id(s) {missing}; nothing removed")
+    referenced = conn.execute(
+        "SELECT original_entry_id FROM contest_entry_corrections WHERE original_entry_id IN (%s)"
+        % ",".join("?" * len(entry_ids)), entry_ids).fetchall()
+    if referenced:
+        raise ValueError(f"Entries {sorted({r[0] for r in referenced})} have corrections on file; "
+                         "removing them would orphan the audit trail. Nothing removed.")
+    removed_at = datetime.utcnow().isoformat()
+    for r in rows:
+        conn.execute(
+            "INSERT INTO contest_entries_removed (original_entry_id, payload, reason, removed_at) "
+            "VALUES (?, ?, ?, ?)",
+            (r[cols.index("id")], json.dumps(dict(zip(cols, r)), default=str), reason, removed_at))
+    conn.execute("DELETE FROM contest_entries WHERE id IN (%s)" % ",".join("?" * len(entry_ids)), entry_ids)
+    conn.commit()
+    return len(rows)
+
+
 def correct_contest_entry(conn, entry_id, reason, new_locked_home_spread=None, new_picked_side=None,
                            new_rank=None, new_locked_total=None):
     """The ONLY sanctioned way to change an already-locked contest_entries
