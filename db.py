@@ -413,6 +413,27 @@ CREATE TABLE IF NOT EXISTS contest_entries_removed (
     removed_at TEXT NOT NULL
 );
 
+-- Audited corrections to pool_lines (2026-11-16). pool_lines is immutable (a
+-- differing re-ingest is a reported conflict, never applied); a number that was
+-- simply TRANSCRIBED WRONG is fixed only through ingest_pool_slate.correct_slate(),
+-- which archives the original here with the reason and source of the fix.
+-- First use: Weeks 1-2 were hand-transcribed from screenshots and later
+-- compared against Splash's own pages (12 spreads and 16 totals wrong in Week 1,
+-- one flipped spread sign in Week 2).
+CREATE TABLE IF NOT EXISTS pool_lines_corrections (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    pool_line_id INTEGER NOT NULL,
+    game_id INTEGER NOT NULL,
+    old_pool_home_spread REAL NOT NULL,
+    old_pool_total REAL,
+    new_pool_home_spread REAL NOT NULL,
+    new_pool_total REAL,
+    reason TEXT NOT NULL,
+    source TEXT NOT NULL,
+    corrected_at TEXT NOT NULL,
+    FOREIGN KEY (pool_line_id) REFERENCES pool_lines(id)
+);
+
 CREATE TABLE IF NOT EXISTS pool_lines (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     contest TEXT NOT NULL,

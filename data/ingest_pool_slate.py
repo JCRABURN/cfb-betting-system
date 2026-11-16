@@ -169,6 +169,57 @@ def ingest_slate(conn, games, season, week, source, contest=DEFAULT_CONTEST):
     return out
 
 
+def correct_slate(conn, games, season, week, reason, source, contest=DEFAULT_CONTEST):
+    """Audited fix for a pool_lines number that was transcribed WRONG.
+
+    pool_lines is immutable on purpose (ingest_slate reports a differing
+    number as a conflict and never applies it). This is the one sanctioned way
+    to change a stored line, and only for a game that is ALREADY stored: it
+    never inserts, so it cannot smuggle new games in. The original values are
+    archived in pool_lines_corrections, with `reason` and `source`, before the
+    UPDATE, all in one transaction (every change applies or none does).
+    Requires a reason. Idempotent: a game whose stored numbers already equal
+    the incoming ones is left alone.
+
+    Returns {"corrected", "unchanged", "not_stored": [...], "unmatched": [...]}."""
+    if not reason or not reason.strip():
+        raise ValueError("correct_slate requires a non-empty reason")
+    schools = fetch_odds.load_school_names(conn)
+    now = datetime.utcnow().isoformat()
+    out = {"corrected": 0, "unchanged": 0, "not_stored": [], "unmatched": []}
+    try:
+        for g in games:
+            home = fetch_odds.resolve_school_name(schools, g["home"])
+            away = fetch_odds.resolve_school_name(schools, g["away"])
+            game_id = fetch_odds.find_game_id(conn, week, season, home, away)
+            if game_id is None:
+                out["unmatched"].append({"away": g["away"], "home": g["home"]})
+                continue
+            row = conn.execute(
+                "SELECT id, pool_home_spread, pool_total FROM pool_lines "
+                "WHERE contest = ? AND season = ? AND week = ? AND game_id = ?",
+                (contest, season, week, game_id)).fetchone()
+            if row is None:
+                out["not_stored"].append({"away": away, "home": home, "game_id": game_id})
+                continue
+            pl_id, old_spread, old_total = row
+            if old_spread == g["home_spread"] and old_total == g["total"]:
+                out["unchanged"] += 1
+                continue
+            conn.execute(
+                "INSERT INTO pool_lines_corrections (pool_line_id, game_id, old_pool_home_spread, old_pool_total, "
+                "new_pool_home_spread, new_pool_total, reason, source, corrected_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (pl_id, game_id, old_spread, old_total, g["home_spread"], g["total"], reason, source, now))
+            conn.execute("UPDATE pool_lines SET pool_home_spread = ?, pool_total = ? WHERE id = ?",
+                         (g["home_spread"], g["total"], pl_id))
+            out["corrected"] += 1
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return out
+
+
 def discover_files(raw_dir=RAW_DIR):
     found = []
     for path in sorted(glob.glob(os.path.join(raw_dir, "week_*_slate.*"))):
@@ -184,7 +235,24 @@ def main():
     parser.add_argument("path", nargs="?")
     parser.add_argument("--week", type=int)
     parser.add_argument("--season", type=int)
+    parser.add_argument("--correct", action="store_true",
+                        help="Apply the file as an AUDITED CORRECTION to already-stored lines (requires --reason)")
+    parser.add_argument("--reason")
     args = parser.parse_args()
+    if args.correct:
+        if not (args.path and args.week and args.season and args.reason):
+            parser.error("--correct needs a path, --week, --season and --reason")
+        with db.log_run("pool_slate_correction") as run:
+            conn = db.get_connection()
+            try:
+                r = correct_slate(conn, parse_slate_file(args.path), args.season, args.week, args.reason,
+                                  source=f"slate:{os.path.basename(args.path)}")
+            finally:
+                conn.close()
+            run["rows_added"] = r["corrected"]
+        print(f"{os.path.basename(args.path)}: {r['corrected']} corrected, {r['unchanged']} unchanged, "
+              f"{len(r['not_stored'])} not stored, {len(r['unmatched'])} unmatched")
+        return
 
     if args.path:
         if args.week is None or args.season is None:

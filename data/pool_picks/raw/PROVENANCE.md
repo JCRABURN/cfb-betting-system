@@ -25,3 +25,15 @@ Validation performed before loading (2026-11-16):
 
 Extra columns in these files (status, final_away, final_home, source) are ignored
 by the ingester; final scores come from CFBD, never from these files.
+
+# Provenance: Weeks 1-6 slate files derived from Splash PDFs (added 2026-11-16)
+
+`week_{3,4,5,6}_2026_splashsports_slate.csv` and `week_{1,2}_2026_splashsports_slate_FROM_PDF.csv` were
+parsed from the user's Splash pick-page PDFs (`Splash.zip`, printed 2026-11-16, one per week) by
+`tools/splash_pdf/`. The PDFs are Splash's own display of the frozen lines. Validated against the
+independently loaded slates for Weeks 7-11 (300 of 300 games identical) before use.
+
+The `_FROM_PDF` files for Weeks 1-2 are CORRECTIONS to the earlier hand-transcribed slates (Week 1: 22 games
+with a wrong spread and/or total; Week 2: one flipped spread sign). They are named so the ingester does
+not auto-discover them as new slates; they were applied through the audited
+`ingest_pool_slate.py --correct --reason` path, which archives every original in `pool_lines_corrections`.

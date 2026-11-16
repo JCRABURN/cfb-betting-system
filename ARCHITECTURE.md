@@ -1310,3 +1310,37 @@ The caller guarded on *content*, not assumption (asserted the exact three ids/so
 Pool report afterward (real picks only, weeks 8-11): 20 entries, 10-10; spreads 4-5, totals 6-5. 548 tests pass.
 
 Gotcha found while doing it: a new table only exists in the production DB after `init_db()` runs (every `log_run`-wrapped script does this; an ad hoc script using `get_connection()` does not). The removal failed *safely* (before any delete) for exactly this reason; the script now calls `init_db()` first.
+
+## 39. Splash pick-page PDFs: authoritative slates and every pick, weeks 1-11 (2026-11-16)
+
+### What arrived and how it was read
+
+The user supplied `Splash.zip`: one print-to-PDF of the SplashSports pick page per week (Weeks 1-11). Each page carries BOTH the pool's full slate of frozen spreads/totals and the user's own picks. Games, lines and points have a text layer; the *selection* is purely visual (a dark outline on the chosen button, the confidence points in the Pts box on that row). So `tools/splash_pdf/` reads text positions with pdfjs and measures button-outline darkness from the rendered page. It is saved in the repo with its validation method; its Node dependencies are deliberately not in `requirements.txt` (ad hoc tool, installed by hand).
+
+Validation, all before anything was loaded:
+- Exactly 5 points digits per week, outline contrast 17 vs ~209 (no ambiguous selection).
+- Parsed slates equal the independently loaded slates for Weeks 7-11: **300 of 300 games, 0 disagreements** (this validates the parser, the PDFs, and the v3-sourced and user-supplied slates at once).
+- The 20 picks for Weeks 8-11 equal the picks the user typed in chat: **20 of 20**.
+- Visually confirmed on rendered pages (Week 3 Miami -20.5; Week 6 Vanderbilt +10.5 and San Diego State/Oregon State Under 55.5).
+
+### It corrected earlier data
+
+The Week 1 and Week 2 slates had been **hand-transcribed from screenshots**, and they were wrong where the PDFs are right:
+- **Week 1: 12 spreads and 16 totals wrong** (22 of 43 games affected), typically by 1-2 points. Spot-check against our own market data confirmed the PDF values: e.g. Louisville @ Ole Miss pool -6.5 per Splash vs market -6.8, where the transcription had -8.5. The "stale pool numbers" noted in Week 1 were transcription errors.
+- **Week 2: one flipped spread sign** (Mississippi State @ Minnesota: Splash shows Mississippi State -1.5; the file had it as Minnesota -1.5).
+
+`pool_lines` is immutable (a differing re-ingest is a reported conflict, never applied), so these were fixed through a new audited path, `ingest_pool_slate.correct_slate()` / `--correct --reason`: it only changes games *already stored* (never inserts), requires a reason, archives each original in `pool_lines_corrections`, and is all-or-nothing. 23 lines corrected, 69 unchanged. The corrected slates are in `raw/*_FROM_PDF.csv` (named so they are not auto-discovered as new slates). The Week 1 "model read" and Week 2 recommendations were produced from the uncorrected slates and are superseded.
+
+New slates loaded from the PDFs: Weeks 3, 4, 5, 6 (229 games, 0 unmatched). Eleven slate weeks now exist.
+
+### The user's picks, graded (weeks 1-11, against the frozen Splash numbers)
+
+Weekly scores: 6, 6, 1, 8, 8, 0, 7, 9, 10, 0, 10 = **65 of 165 points** (coin-flip expectation 82.5). **23-32 on 55 picks (41.8%)**; spreads 13-20, totals 10-12. By confidence: 5: 7-4, 4: 2-9, 3: 2-9, 2: 4-7, 1: 8-3.
+
+How to read it: the chance of 23 or fewer wins from 55 fair coin flips is exactly 14% (about 1 in 7), so this is **not distinguishable from luck**; the 95% interval on 41.8% is 29-55%, and the spreads' 13-20 is likewise a 15% tail. The confidence-slot pattern (7-4 at 5 and 8-3 at 1, but 2-9 at 4 and 3) has ~11 picks per cell and is noise-sized. Two zero-point weeks (6 and 10) account for much of the gap. For context the model's own tracked picks run ~50% over 580+ games, i.e. the user's picks have run below both the model and a coin.
+
+### Stale-number signal after the corrections
+
+Eleven slate weeks, graded against the pool number: gap < 1: 152-163 (48.2%, n=315); 1-2: 133-100 (57.1%, 95% CI 51-63%, n=233); 2-3: 34-24 (58.6%); >=3: 17-12 (58.6%). **Pre-registered primary (gap >= 2): 51-36, 58.6%, n=87, 95% CI 48.1%-68.4%.** Bar (n >= 60 AND lower bound > 50%): sample size met, lower bound still short (48.1%, up from 46.7%). Spreads 53.0% (n=438), totals 52.8% (n=197).
+
+Caution: the gap 1-2 interval clears 50% but that is one of four buckets examined after the fact, not the pre-registered test, so it should not be quoted as confirmation. The null bucket (< 1) landing slightly *below* 50% (48.2%) is a reminder these intervals are wide. The retrospective gaps use the last pre-kickoff pull (at or after the moment a pick could be made), which biases them upward. Weeks 3-6 contribute spread signals only (totals were not collected before 2026-10-14).
