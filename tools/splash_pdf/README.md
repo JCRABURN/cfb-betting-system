@@ -22,3 +22,11 @@ purely visual, so the pipeline reads text positions and measures button-outline 
 
 The hard-coded geometry (AWAY/HOME/PTS column x-ranges, in PDF points on a Letter page) matches
 Splash's current layout; if the pool UI changes, re-measure from `render.js` output before trusting a run.
+
+## Blank prints (Week 12 2026 on)
+
+A print with no picks marked comes out with different geometry and fragmented text; `parse_splash.py` finds
+0 games in it. For those use `parse_blank_slate.py` (slate only, no picks):
+
+    node extract.js "Week 12.pdf" json/w12.json
+    python parse_blank_slate.py json/w12.json week_12_2026_splashsports_slate.csv

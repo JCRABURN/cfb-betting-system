@@ -37,3 +37,14 @@ The `_FROM_PDF` files for Weeks 1-2 are CORRECTIONS to the earlier hand-transcri
 with a wrong spread and/or total; Week 2: one flipped spread sign). They are named so the ingester does
 not auto-discover them as new slates; they were applied through the audited
 `ingest_pool_slate.py --correct --reason` path, which archives every original in `pool_lines_corrections`.
+
+# Provenance: Week 12 slate (added 2026-11-17)
+
+`week_12_2026_splashsports_slate.csv` was parsed from the user's Splash pick-page PDF printed
+2026-11-17 14:22 CST ("Week 12 · Entry 1", blank: no picks marked). That print splits text into
+fragments and uses different page geometry, so the validated `parse_splash.py` found 0 games; it was read
+with `tools/splash_pdf/parse_blank_slate.py` instead. Checks: 66 games, 0 parse problems, every away spread
+is the exact opposite of its home spread, Over and Under numbers agree on every game, and all 66 rows were
+compared by eye with the PDF's text. All 132 team names resolve to CFBD school names (5 via existing aliases:
+UMass, Louisiana-Monroe, Appalachian State, Miami (FL), San Jose State). Week 12 games were not yet in the DB
+when this was written, so game matching happens when the midweek workflow ingests the file.

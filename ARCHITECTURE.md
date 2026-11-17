@@ -1344,3 +1344,16 @@ How to read it: the chance of 23 or fewer wins from 55 fair coin flips is exactl
 Eleven slate weeks, graded against the pool number: gap < 1: 152-163 (48.2%, n=315); 1-2: 133-100 (57.1%, 95% CI 51-63%, n=233); 2-3: 34-24 (58.6%); >=3: 17-12 (58.6%). **Pre-registered primary (gap >= 2): 51-36, 58.6%, n=87, 95% CI 48.1%-68.4%.** Bar (n >= 60 AND lower bound > 50%): sample size met, lower bound still short (48.1%, up from 46.7%). Spreads 53.0% (n=438), totals 52.8% (n=197).
 
 Caution: the gap 1-2 interval clears 50% but that is one of four buckets examined after the fact, not the pre-registered test, so it should not be quoted as confirmation. The null bucket (< 1) landing slightly *below* 50% (48.2%) is a reminder these intervals are wide. The retrospective gaps use the last pre-kickoff pull (at or after the moment a pick could be made), which biases them upward. Weeks 3-6 contribute spread signals only (totals were not collected before 2026-10-14).
+
+## 40. Week 12 slate from a blank Splash print (2026-11-17)
+
+The user sent the Week 12 pick page as a PDF with no picks on it. 66 games, spreads and totals. This print lays
+out and splits its text differently from the Weeks 1-11 prints, so the existing parser read 0 games; a small
+slate-only parser (`tools/splash_pdf/parse_blank_slate.py`) joins the fragments back together. Checks before
+committing: spreads exact opposites, Over/Under agree, every team name resolves, rows compared by eye with the
+PDF. Provenance in `data/pool_picks/raw/PROVENANCE.md`.
+
+Only the CSV is committed, not a `cfb.db` change: Week 12 games aren't loaded until the Tuesday workflow runs
+`fetch_stats`, so an ingest now would match nothing. The midweek workflow's slate step picks the file up
+automatically once it is on `main`, then computes the stale-number signal and blended top 5. Keeping `cfb.db`
+out of this branch also avoids a binary merge conflict with the bot's own `cfb.db` commits.
