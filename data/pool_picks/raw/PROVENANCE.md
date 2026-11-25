@@ -48,3 +48,12 @@ is the exact opposite of its home spread, Over and Under numbers agree on every 
 compared by eye with the PDF's text. All 132 team names resolve to CFBD school names (5 via existing aliases:
 UMass, Louisiana-Monroe, Appalachian State, Miami (FL), San Jose State). Week 12 games were not yet in the DB
 when this was written, so game matching happens when the midweek workflow ingests the file.
+
+# Provenance: Week 13 slate (added 2026-11-25)
+
+`week_13_2026_splashsports_slate.csv` was parsed from the user's Splash pick-page PDF printed
+2026-11-25 08:39 ("Week 13 · Entry 1", blank: no picks marked) with `tools/splash_pdf/parse_blank_slate.py`.
+Text was extracted with pdfjs 5.6 (text only), not `extract.js`, whose pdfjs 3 packages were not installed.
+Checks: 69 games (matching the page-by-page count), 0 parse problems, rows reviewed against the PDF's text.
+On a scratch copy all 69 games matched CFBD games; against a 2026-11-25 market pull, no spread or total on the
+games with a market line differed by more than 3.0 points.

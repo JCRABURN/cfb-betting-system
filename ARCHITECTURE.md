@@ -1357,3 +1357,15 @@ Only the CSV is committed, not a `cfb.db` change: Week 12 games aren't loaded un
 `fetch_stats`, so an ingest now would match nothing. The midweek workflow's slate step picks the file up
 automatically once it is on `main`, then computes the stale-number signal and blended top 5. Keeping `cfb.db`
 out of this branch also avoids a binary merge conflict with the bot's own `cfb.db` commits.
+
+## 41. Week 13 slate from a blank Splash print (2026-11-25)
+
+Same blank layout as Week 12: 69 games. The Node packages `extract.js` expects were not installed, so the text
+was read with a text-only script using pdfjs 5 already on the machine (same item shape; a blank print has no
+pick outlines to measure) and then parsed by the unchanged `parse_blank_slate.py`. Checks: 0 parse problems;
+on a scratch copy of the repo all 69 games matched CFBD games.
+
+Known gap found in that scratch run: the odds feed's names for North Dakota State @ San José State and
+Sacramento State @ Hawai'i did not join to a `game_id`, so those two games get no stale-number signal.
+
+As in section 40, only the CSV and docs change here; the workflows ingest the slate into `cfb.db`.
