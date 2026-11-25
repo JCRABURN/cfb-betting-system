@@ -268,7 +268,18 @@ def calculate_line_movement(current_lines, opening_lines):
 
 
 def load_school_names(conn):
-    return [r[0] for r in conn.execute("SELECT school FROM teams").fetchall()]
+    """FBS school names to resolve odds/pool team names against.
+
+    `teams` is only refreshed by the historical backfill, so a program that
+    joins FBS mid-project is missing from it (North Dakota State and
+    Sacramento State, 2026: every one of their odds rows was stored with a
+    NULL game_id). The weekly point-in-time stats snapshots do list them, so
+    those names are included too. Deliberately NOT every name in
+    team_game_stats or games: both also carry FCS schools."""
+    return [r[0] for r in conn.execute(
+        "SELECT school FROM teams "
+        "UNION SELECT team FROM team_game_stats WHERE source = 'cfbd_point_in_time'"
+    ).fetchall()]
 
 
 def _normalize(name):

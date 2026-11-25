@@ -1369,3 +1369,19 @@ Known gap found in that scratch run: the odds feed's names for North Dakota Stat
 Sacramento State @ Hawai'i did not join to a `game_id`, so those two games get no stale-number signal.
 
 As in section 40, only the CSV and docs change here; the workflows ingest the slate into `cfb.db`.
+
+## 42. New FBS schools did not join to odds (2026-11-25)
+
+Cause of the gap in section 41: odds names are matched against the `teams` table, which only the historical
+backfill refreshes. North Dakota State and Sacramento State moved to FBS in 2026 and were never in it, so all
+season their odds rows were stored with a NULL `game_id`.
+
+Fix: `fetch_odds.load_school_names()` now also includes schools in the `cfbd_point_in_time` stats snapshots
+(today that adds exactly those two). Other sources were rejected because they carry FCS schools. A school new
+to FBS next season is picked up only once its first snapshot exists.
+
+Verified on a scratch copy by replaying an archived odds response: of 238 odds team names only those two
+resolve differently, both week 13 games joined, and the week 13 top 5 did not change.
+
+**Not repaired:** earlier rows keep their NULL `game_id`, so past pool games involving these two schools
+(17 in weeks 2-12) are still missing from the stale-number record. Backfilling them would change that record.

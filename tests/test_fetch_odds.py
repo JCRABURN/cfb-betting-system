@@ -1,4 +1,4 @@
-from fetch_odds import resolve_school_name, has_games_this_week, filter_by_week
+from fetch_odds import resolve_school_name, load_school_names, has_games_this_week, filter_by_week
 
 SCHOOLS = [
     "TCU", "USC", "NC State", "Ohio", "Ohio State", "Miami", "Miami (OH)",
@@ -156,6 +156,26 @@ def test_filter_by_week_mixed_slate_keeps_only_the_current_week():
     result = filter_by_week(games, WEEK1_START, WEEK1_END)
     assert len(result) == 1
     assert result[0]["home_team"] == "TCU"
+
+
+def test_new_fbs_school_missing_from_teams_table_still_joins(temp_db):
+    # Week 13 2026: "North Dakota State Bison" and "Sacramento State Hornets"
+    # never joined to a game because `teams` predates their move to FBS.
+    conn = temp_db.get_connection()
+    conn.execute("INSERT INTO teams (school) VALUES ('Hawai''i')")
+    for team, source in (("Sacramento State", "cfbd_point_in_time"),
+                         ("Hawai'i", "cfbd_point_in_time"),
+                         ("Wofford", "cfbd")):  # FCS: must stay out
+        conn.execute(
+            "INSERT INTO team_game_stats (season, week, team, source, fetched_at) "
+            "VALUES (2026, 12, ?, ?, '2026-11-24T00:00:00')",
+            (team, source),
+        )
+    conn.commit()
+    schools = load_school_names(conn)
+    conn.close()
+    assert sorted(schools) == ["Hawai'i", "Sacramento State"]
+    assert resolve_school_name(schools, "Sacramento State Hornets") == "Sacramento State"
 
 
 def test_alias_resolves_pool_sheet_abbreviations():
